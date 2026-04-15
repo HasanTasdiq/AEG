@@ -12,18 +12,45 @@ from topo.Link import Link
 from topo.helper import request_timeout
 from numpy import log as ln
 from random import sample
+import numpy as np
 
+sys.path.insert(0, "../../rl")
+
+from EntanglementAgent import EntanglementAgent  
+
+"""
+AEG_LS (AEG – Link Selection only) — RL-based link selection, no caching or proactive swap.
+
+Replaces ILP's first LP (link assignment) with a DQN that learns which links to
+entangle each time slot. Path selection still uses REPS's LP2/EPS/ELS pipeline.
+No entanglement caching and no proactive entanglement swapping.
+
+EntanglementAgent (full state with distances) is used for link selection.
+This is the "AEG-LS" variant in the paper's ablation study (Fig. 5).
+"""
 
 EPS = 1e-6
-class REPS(AlgorithmBase):
-    def __init__(self, topo , param = None , name = 'REPS'):
+
+
+class AEG_LS(AlgorithmBase):
+    """
+    AEG with RL-based Link Selection only.
+    The DQN (EntanglementAgent) decides which links to entangle;
+    path selection uses the same LP2/EPS/ELS as ILP.
+    """
+
+    def __init__(self, topo, param=None, name='AEG_LS'):
         super().__init__(topo)
-        self.name = name
-        self.requests = []
-        self.totalRequest = 0
-        self.totalUsedQubits = 0
+        self.name             = name
+        self.requests         = []
+        self.totalRequest     = 0
+        self.totalUsedQubits  = 0
         self.totalWaitingTime = 0
-        self.param = param
+        self.entAgent         = None   # created in prepare()
+
+    def prepare(self):
+        """Initialise the EntanglementAgent at the start of the first time slot."""
+        self.entAgent = EntanglementAgent(self, pid=0)
 
     def genNameByComma(self, varName, parName):
         return (varName + str(parName)).replace(' ', '')
@@ -68,8 +95,7 @@ class REPS(AlgorithmBase):
         self.result.idleTime += len(self.requests)
         if len(self.srcDstPairs) > 0:
             self.result.numOfTimeslot += 1
-            self.PFT() # compute (self.ti, self.fi)
-        # print('[REPS] p2 end')
+            self.entAgent.learn_and_predict()
     
     def p4(self):
         if len(self.srcDstPairs) > 0:
@@ -77,195 +103,11 @@ class REPS(AlgorithmBase):
             self.ELS()
         # print('[REPS] p4 end') 
         self.printResult()
+        self.entAgent.update_reward()
         return self.result
 
-    
-    # return fi(u, v)
+    # ── LP1 / PFT / randPFT removed — AEG_LS uses EntanglementAgent instead ──
 
-    def LP1(self):
-        # print('[REPS] LP1 start')
-        # initialize fi(u, v) ans ti
-
-        self.fi_LP = {SDpair : {} for SDpair in self.srcDstPairs}
-        self.ti_LP = {SDpair : 0 for SDpair in self.srcDstPairs}
-        
-        numOfNodes = len(self.topo.nodes)
-        numOfSDpairs = len(self.srcDstPairs)
-
-        edgeIndices = []
-        notEdge = []
-        for edge in self.topo.edges:
-            edgeIndices.append((edge[0].id, edge[1].id))
-        
-        for u in range(numOfNodes):
-            for v in range(numOfNodes):
-                if (u, v) not in edgeIndices and (v, u) not in edgeIndices:
-                    notEdge.append((u, v))
-        # LP
-
-        m = gp.Model('REPS for PFT')
-        m.setParam("OutputFlag", 0)
-        f = m.addVars(numOfSDpairs, numOfNodes, numOfNodes, lb = 0, vtype = gp.GRB.CONTINUOUS, name = "f")
-        t = m.addVars(numOfSDpairs, lb = 0, vtype = gp.GRB.CONTINUOUS, name = "t")
-        x = m.addVars(numOfNodes, numOfNodes, lb = 0, vtype = gp.GRB.CONTINUOUS, name = "x")
-        m.update()
-        
-        m.setObjective(gp.quicksum(t[i] for i in range(numOfSDpairs)), gp.GRB.MAXIMIZE)
-
-        for i in range(numOfSDpairs):
-            s = self.srcDstPairs[i][0].id
-            m.addConstr(gp.quicksum(f[i, s, v] for v in range(numOfNodes)) - gp.quicksum(f[i, v, s] for v in range(numOfNodes)) == t[i])
-
-            d = self.srcDstPairs[i][1].id
-            m.addConstr(gp.quicksum(f[i, d, v] for v in range(numOfNodes)) - gp.quicksum(f[i, v, d] for v in range(numOfNodes)) == -t[i])
-
-            for u in range(numOfNodes):
-                if u not in [s, d]:
-                    m.addConstr(gp.quicksum(f[i, u, v] for v in range(numOfNodes)) - gp.quicksum(f[i, v, u] for v in range(numOfNodes)) == 0)
-
-        
-        for (u, v) in edgeIndices:
-            dis = self.topo.distance(self.topo.nodes[u].loc, self.topo.nodes[v].loc)
-            probability = math.exp(-self.topo.alpha * dis)
-            m.addConstr(gp.quicksum(f[i, u, v] + f[i, v, u] for i in range(numOfSDpairs)) <= probability * x[u, v])
-
-            capacity = self.edgeCapacity(self.topo.nodes[u], self.topo.nodes[v])
-            m.addConstr(x[u, v] <= capacity)
-
-
-        for (u, v) in notEdge:
-            m.addConstr(x[u, v] == 0)               
-            for i in range(numOfSDpairs):
-                m.addConstr(f[i, u, v] == 0)
-
-        for u in range(numOfNodes):
-            edgeContainu = []
-            for (n1, n2) in edgeIndices:
-                if u in (n1, n2):
-                    edgeContainu.append((n1, n2))
-                    edgeContainu.append((n2, n1))
-            m.addConstr(gp.quicksum(x[n1, n2] for (n1, n2) in edgeContainu) <= self.topo.nodes[u].remainingQubits)
-
-        m.optimize()
-
-        for i in range(numOfSDpairs):
-            SDpair = self.srcDstPairs[i]
-            for edge in self.topo.edges:
-                u = edge[0]
-                v = edge[1]
-                varName = self.genNameByComma('f', [i, u.id, v.id])
-                self.fi_LP[SDpair][(u, v)] = m.getVarByName(varName).x
-
-            for edge in self.topo.edges:
-                u = edge[1]
-                v = edge[0]
-                varName = self.genNameByComma('f', [i, u.id, v.id])
-                self.fi_LP[SDpair][(u, v)] = m.getVarByName(varName).x
-
-            for (u, v) in notEdge:
-                u = self.topo.nodes[u]
-                v = self.topo.nodes[v]
-                self.fi_LP[SDpair][(u, v)] = 0
-            
-            
-            varName = self.genNameByComma('t', [i])
-            self.ti_LP[SDpair] = m.getVarByName(varName).x
-        # print('[REPS] LP1 end')
-    def edgeCapacity(self, u, v):
-        capacity = 0
-        for link in u.links:
-            if link.contains(v):
-                capacity += 1
-        used = 0
-        for SDpair in self.srcDstPairs:
-            used += self.fi[SDpair][(u, v)]
-            used += self.fi[SDpair][(v, u)]
-        return capacity - used
-
-    def widthForSort(self, path):
-        # path[-1] is the path of weight
-        return -path[-1]
-    
-    def PFT(self):
-
-        # initialize fi and ti
-        self.fi = {SDpair : {} for SDpair in self.srcDstPairs}
-        self.ti = {SDpair : 0 for SDpair in self.srcDstPairs}
-
-        for SDpair in self.srcDstPairs:
-            for u in self.topo.nodes:
-                for v in self.topo.nodes:
-                    self.fi[SDpair][(u, v)] = 0
-        
-        # PFT
-        failedFindPath = False
-        while not failedFindPath:
-            self.LP1()
-            failedFindPath = True
-            Pi = {}
-            paths = []
-            for SDpair in self.srcDstPairs:
-                Pi[SDpair] = self.findPathsForPFT(SDpair)
-
-            for SDpair in self.srcDstPairs:
-                K = len(Pi[SDpair])
-                for k in range(K):
-                    width = math.floor(Pi[SDpair][k][-1])
-                    Pi[SDpair][k][-1] -= width
-                    paths.append(Pi[SDpair][k])
-                    pathLen = len(Pi[SDpair][k]) - 1
-                    self.ti[SDpair] += width
-                    if width == 0:
-                        continue
-                    failedFindPath = False
-                    for nodeIndex in range(pathLen - 1):
-                        node = Pi[SDpair][k][nodeIndex]
-                        next = Pi[SDpair][k][nodeIndex + 1]
-                        self.fi[SDpair][(node, next)] += width
-
-            sorted(paths, key = self.widthForSort)
-
-            for path in paths:
-                pathLen = len(path) - 1
-                width = path[-1]
-                SDpair = (path[0], path[-2])
-                isable = True
-                for nodeIndex in range(pathLen - 1):
-                    node = path[nodeIndex]
-                    next = path[nodeIndex + 1]
-                    if self.edgeCapacity(node, next) < 1:
-                        isable = False
-                
-                if not isable:
-                    for nodeIndex in range(pathLen - 1):
-                        node = path[nodeIndex]
-                        next = path[nodeIndex + 1]
-                    continue
-                
-                failedFindPath = False
-                self.ti[SDpair] += 1
-                for nodeIndex in range(pathLen - 1):
-                    node = path[nodeIndex]
-                    next = path[nodeIndex + 1]
-                    self.fi[SDpair][(node, next)] += 1
-
-        # print('[REPS] PFT end')
-        for SDpair in self.srcDstPairs:
-            for edge in self.topo.edges:
-                u = edge[0]
-                v = edge[1]
-                need = self.fi[SDpair][(u, v)] + self.fi[SDpair][(v, u)]
-                if need:
-                    assignCount = 0
-                    for link in u.links:
-                        if link.contains(v) and link.assignable():
-                            # link(u, v) for u, v in edgeIndices)
-                            link.assignQubits()
-                            self.totalUsedQubits += 2
-                            assignCount += 1
-                            if assignCount == need:
-                                break
-            
     def edgeSuccessfulEntangle(self, u, v):
         if u == v:
             return 0
@@ -281,7 +123,7 @@ class REPS(AlgorithmBase):
 
         numOfNodes = len(self.topo.nodes)
         numOfSDpairs = len(self.srcDstPairs)
-        numOfFlow = [self.ti[self.srcDstPairs[i]] for i in range(numOfSDpairs)]
+        numOfFlow = [9 for i in range(numOfSDpairs)]
         if len(numOfFlow):
             maxK = max(numOfFlow)
         else:
@@ -392,7 +234,8 @@ class REPS(AlgorithmBase):
     def EPS(self):
         self.LP2()
         # initialize fki(u, v), tki
-        numOfFlow = {SDpair : self.ti[SDpair] for SDpair in self.srcDstPairs}
+        numOfFlow = {SDpair : 9 for SDpair in self.srcDstPairs}
+
         self.fki = {SDpair : [{} for k in range(numOfFlow[SDpair])] for SDpair in self.srcDstPairs}
         self.tki = {SDpair : [0 for k in range(numOfFlow[SDpair])] for SDpair in self.srcDstPairs}
         self.pathForELS = {SDpair : [] for SDpair in self.srcDstPairs}
@@ -587,6 +430,10 @@ class REPS(AlgorithmBase):
                     for node, link in path:
                         if link is not None:
                             link.used = True
+                            edge = self.topo.linktoEdgeSorted(link)
+
+                            self.topo.reward_ent[edge] =(self.topo.reward_ent[edge] + self.topo.positive_reward) if edge in self.topo.reward_ent else self.topo.positive_reward
+
                             # self.result.usedLinks += 1
                 # for x in successPath:
                 #     print('[REPS] success:', [z.id for z in x])
@@ -599,6 +446,22 @@ class REPS(AlgorithmBase):
                             successReq += 1
                             break
                 for (node, link1, link2) in needLink[(SDpair, pathIndex)]:
+                    if not link1 is None and not link1.used and link1.entangled:
+                        edge = self.topo.linktoEdgeSorted(link1)
+                        
+                        try:
+                            self.topo.reward_ent[edge] += self.topo.negative_reward
+                        except:
+                            self.topo.reward_ent[edge] = self.topo.negative_reward
+
+                    if not link2 is None and not link2.used and link2.entangled:
+
+                        edge = self.topo.linktoEdgeSorted(link2)
+                        
+                        try:
+                            self.topo.reward_ent[edge] += self.topo.negative_reward
+                        except:
+                            self.topo.reward_ent[edge] = self.topo.negative_reward
                     link1.clearPhase4Swap()
                     link2.clearPhase4Swap()
                 
@@ -618,7 +481,9 @@ class REPS(AlgorithmBase):
     def filterReqeuest(self):
         self.requests = list(filter(lambda x: self.timeSlot -  x[2] < self.topo.requestTimeout -1 , self.requests))
 
-    def findPathsForPFT(self, SDpair):
+    # findPathsForPFT / DijkstraForPFT / widthForPFT removed (no LP1/PFT in AEG_LS)
+
+    def findPathsForEPS(self, SDpair, k):
         src = SDpair[0]
         dst = SDpair[1]
         pathList = []
@@ -642,51 +507,6 @@ class REPS(AlgorithmBase):
             pathList.append(path.copy())
 
         return pathList
-    
-    def DijkstraForPFT(self, SDpair):
-        src = SDpair[0]
-        dst = SDpair[1]
-        self.parent = {node : self.topo.sentinel for node in self.topo.nodes}
-        adjcentList = {node : set() for node in self.topo.nodes}
-        for node in self.topo.nodes:
-            for link in node.links:
-                neighbor = link.theOtherEndOf(node)
-                adjcentList[node].add(neighbor)
-        
-        distance = {node : 0 for node in self.topo.nodes}
-        visited = {node : False for node in self.topo.nodes}
-        pq = PriorityQueue()
-
-        pq.put((-math.inf, src.id))
-        while not pq.empty():
-            (dist, uid) = pq.get()
-            u = self.topo.nodes[uid]
-            if visited[u]:
-                continue
-
-            if u == dst:
-                return True
-            distance[u] = -dist
-            visited[u] = True
-            
-            for next in adjcentList[u]:
-                newDistance = min(distance[u], self.fi_LP[SDpair][(u, next)])
-                if distance[next] < newDistance:
-                    distance[next] = newDistance
-                    self.parent[next] = u
-                    pq.put((-distance[next], next.id))
-
-        return False
-
-    def widthForPFT(self, path, SDpair):
-        numOfnodes = len(path)
-        width = math.inf
-        for i in range(numOfnodes - 1):
-            currentNode = path[i]
-            nextNode = path[i + 1]
-            width = min(width, self.fi_LP[SDpair][(currentNode, nextNode)])
-
-        return width
     
     def findPathsForEPS(self, SDpair, k):
         src = SDpair[0]
@@ -805,62 +625,3 @@ class REPS(AlgorithmBase):
                     pq.put((distance[next], next.id))
 
         return False
-if __name__ == '__main__':
-    
-    topo = Topo.generate(50, 0.9, 5, 0.0002, 6)
-    s = REPS(topo)
-    result = AlgorithmResult()
-    samplesPerTime = 8 * 2
-    ttime = 100
-    rtime = ttime
-    # requests = {i : [] for i in range(ttime)}
-
-    # for i in range(ttime):
-    #     if i < rtime:
-
-    #         # ids =  [(1,15), (1,16), (4,17), (3,16)]
-
-    #         # for (p,q) in ids:
-    #         #     source = None
-    #         #     dest = None
-    #         #     for node in topo.nodes:
-
-    #         #         if node.id == p:
-    #         #             source = node
-    #         #         if node.id == q:
-    #         #             dest = node
-    #         #     requests[i].append((source , dest))
-
-    #         a = sample(topo.nodes, samplesPerTime)
-    #         for n in range(0,samplesPerTime,2):
-    #             requests[i].append((a[n], a[n+1]))
-    #     print('[REPS] S/D:' , i , [(a[0].id , a[1].id) for a in requests[i]])
-
-    # for i in range(ttime):
-    #     result = s.work(requests[i], i)
-    
-
-    for i in range(0, 100):
-        requests = []
-        if i < 100:
-            for j in range(20):
-                a = sample(topo.nodes, 2)
-                requests.append((a[0], a[1]))
-            
-            # ids = [(1,15), (1,16), (4,17), (3,16)]
-            # for (p,q) in ids:
-            #     source = None
-            #     dest = None
-            #     for node in topo.nodes:
-
-            #         if node.id == p:
-            #             source = node
-            #         if node.id == q:
-            #             dest = node
-            #     requests.append((source , dest))
-
-            s.work(requests, i)
-        else:
-            s.work([], i)
-
-    # print(result.waitingTime, result.numOfTimeslot)

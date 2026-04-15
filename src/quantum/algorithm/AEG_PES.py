@@ -1,3 +1,17 @@
+"""
+AEG_PES (AEG – Proactive Entanglement Swapping) — Full AEG algorithm.
+
+Combines all three AEG contributions:
+  1. RL-based link selection (EntanglementAgent replaces ILP's first LP)
+  2. Entanglement caching (unused entanglements survive across time slots
+     up to topo.entanglementLifetime, default 10 slots)
+  3. Proactive entanglement swapping (tryPreSwapp builds virtual multi-hop
+     links from cached entanglements for frequently-used node pairs)
+
+Path selection still uses REPS's LP2/EPS/ELS pipeline.
+This is the "AEG-PES" algorithm and the best-performing variant in the paper.
+"""
+
 import sys
 import math
 import random
@@ -6,30 +20,38 @@ from queue import PriorityQueue
 sys.path.append("..")
 from AlgorithmBase import AlgorithmBase
 from AlgorithmBase import AlgorithmResult
-from topo.Topo import Topo 
-from topo.Node import Node 
+from topo.Topo import Topo
+from topo.Node import Node
 from topo.Link import Link
 from numpy import log as ln
 from random import sample
 import numpy as np
 from topo.helper import request_timeout
 
-
-######################
-##pre entanglement and pre swap of them##
-######################
+sys.path.insert(0, "../../rl")
+from EntanglementAgent import EntanglementAgent
 
 EPS = 1e-6
-class REPSCACHEENT_DQRL_PSWAP(AlgorithmBase):
-    def __init__(self, topo, param=None, name=''):
-        super().__init__(topo , param=param)
-        self.name = name
-        self.requests = []
-        self.totalRequest = 0
-        self.totalUsedQubits = 0
+
+
+class AEG_PES(AlgorithmBase):
+    """
+    Full AEG: RL link selection + entanglement caching + proactive swapping.
+    """
+
+    def __init__(self, topo, param=None, name='AEG_PES'):
+        super().__init__(topo, param=param)
+        self.name             = name
+        self.requests         = []
+        self.totalRequest     = 0
+        self.totalUsedQubits  = 0
         self.totalWaitingTime = 0
-        self.pathSelecttion = 0
-        # self.param = param
+        self.pathSelecttion   = 0
+        self.entAgent         = None   # created in prepare()
+
+    def prepare(self):
+        """Initialise the EntanglementAgent at the start of the first time slot."""
+        self.entAgent = EntanglementAgent(self, pid=0)
 
     def genNameByComma(self, varName, parName):
         return (varName + str(parName)).replace(' ', '')
@@ -971,69 +993,3 @@ class REPSCACHEENT_DQRL_PSWAP(AlgorithmBase):
                     pq.put((distance[next], next.id))
 
         return False
-if __name__ == '__main__':
-    numOfNode = 100
-    topo = Topo.generate(numOfNode, 0.9, 5, 0.0002, 6)
-    s = REPSCACHEENT_DQRL_PSWAP(topo,param='ten',name='REPS_preswap_1hop')
-    s = REPSCACHEENT_DQRL_PSWAP(topo,param='ten',name='REPS_preswap_multihop')
-    result = AlgorithmResult()
-    samplesPerTime = 10 * 2
-    ttime = 20
-    rtime = ttime
-    requests = {i : [] for i in range(ttime)}
-
-    # bias_weights = [x%5==0 for x in range(numOfNode)]
-    bias_weights = [random.random() for x in range(numOfNode)]
-    prob = np.array(bias_weights) / np.sum(bias_weights)
-    # for i in range(ttime):
-    #     if i < rtime:
-
-    #         ids = [(1,15), (1,16), (4,17), (3,16)]
-    #         for (p,q) in ids:
-    #             source = None
-    #             dest = None
-    #             for node in topo.nodes:
-
-    #                 if node.id == p:
-    #                     source = node
-    #                 if node.id == q:
-    #                     dest = node
-    #             requests[i].append((source , dest))
-
-    #         # a = sample(topo.nodes, samplesPerTime)
-    #         # for n in range(0,samplesPerTime,2):
-    #         #     requests[i].append((a[n], a[n+1]))
-    #     print('[REPS-CACHE4] S/D:' , i , [(a[0].id , a[1].id) for a in requests[i]])
-
-    # for i in range(ttime):
-    #     result = s.work(requests[i], i)
-
-
-    for i in range(0, 100):
-        requests = []
-        if i < 100:
-            for j in range(20):
-                a = sample(topo.nodes, 2)
-                # a = np.random.choice(len(prob), size=2, replace=False, p=prob)
-                # a = [topo.nodes[a[0]] , topo.nodes[a[1]]]
-                
-                requests.append((a[0], a[1]))
-            
-            # ids = [(1,15), (1,16), (4,17), (3,16)]
-            # for (p,q) in ids:
-            #     source = None
-            #     dest = None
-            #     for node in topo.nodes:
-
-            #         if node.id == p:
-            #             source = node
-            #         if node.id == q:
-            #             dest = node
-            #     requests.append((source , dest))
-            # print(requests)
-            s.work(requests, i)
-        else:
-            s.work([], i)
-    
-
-    # print(result.waitingTime, result.numOfTimeslot)

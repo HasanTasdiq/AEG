@@ -1,1 +1,5 @@
 sendgrid.env
+models/
+*.keras
+*.pickle
+*.pkl
