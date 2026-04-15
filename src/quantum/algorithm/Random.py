@@ -134,11 +134,15 @@ class RandomLinkSelection(AlgorithmBase):
         m = gp.Model('Random LP2')
         m.setParam('OutputFlag', 0)
 
-        f = [[[[ None ] * numOfNodes for _ in range(numOfNodes)]
-               for _ in range(maxK)] for _ in range(numOfSDpairs)]
+        # Initialise f to 0 (not None) — non-edge entries stay 0 so gp.quicksum
+        # can safely include them without a TypeError.
+        f = [0] * numOfSDpairs
         for i in range(numOfSDpairs):
+            f[i] = [0] * maxK
             for k in range(maxK):
+                f[i][k] = [0] * numOfNodes
                 for u in range(numOfNodes):
+                    f[i][k][u] = [0] * numOfNodes
                     for v in range(numOfNodes):
                         if k < numOfFlow[i] and (
                                 (u, v) in edgeIndices or (v, u) in edgeIndices):
@@ -146,8 +150,9 @@ class RandomLinkSelection(AlgorithmBase):
                                 lb=0, ub=1, vtype=gp.GRB.CONTINUOUS,
                                 name='f[%d][%d][%d][%d]' % (i, k, u, v))
 
-        t = [[None] * maxK for _ in range(numOfSDpairs)]
+        t = [0] * numOfSDpairs
         for i in range(numOfSDpairs):
+            t[i] = [0] * maxK
             for k in range(maxK):
                 ub = 1 if k < numOfFlow[i] else 0
                 t[i][k] = m.addVar(lb=0, ub=ub, vtype=gp.GRB.CONTINUOUS,
@@ -171,10 +176,14 @@ class RandomLinkSelection(AlgorithmBase):
                             gp.quicksum(f[i][k][v][d] for v in nbD) == -t[i][k])
                 for u in range(numOfNodes):
                     if u not in [s, d]:
-                        others = [v for v in range(numOfNodes) if v not in [s, d]]
-                        m.addConstr(
-                            gp.quicksum(f[i][k][u][v] for v in others) -
-                            gp.quicksum(f[i][k][v][u] for v in others) == 0)
+                        # Only sum over actual neighbours — avoids iterating all
+                        # N nodes and hitting 0-int entries in non-edge slots.
+                        edgeUV = [v for v in range(numOfNodes)
+                                  if (u, v) in edgeIndices or (v, u) in edgeIndices]
+                        if edgeUV:
+                            m.addConstr(
+                                gp.quicksum(f[i][k][u][v] for v in edgeUV) -
+                                gp.quicksum(f[i][k][v][u] for v in edgeUV) == 0)
 
         for (u, v) in edgeIndices:
             cap = self.edgeSuccessfulEntangle(
@@ -183,7 +192,6 @@ class RandomLinkSelection(AlgorithmBase):
                 gp.quicksum(
                     (f[i][k][u][v] + f[i][k][v][u])
                     for k in range(maxK) for i in range(numOfSDpairs)
-                    if f[i][k][u][v] is not None
                 ) <= cap)
 
         m.optimize()
