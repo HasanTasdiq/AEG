@@ -151,9 +151,9 @@ class Topo:
             usedNode = []
             usedNode.append(_node) 
             
-            # Make the number of neighbors approach degree  
-            if len(_neighbors[_node]) < degree - 1:  
-                for _ in range(0, degree - 1 - len(_neighbors[_node])):
+            # Ensure each node reaches the target average degree (paper: 6)
+            if len(_neighbors[_node]) < degree:
+                for _ in range(0, degree - len(_neighbors[_node])):
                     curNode = -1
                     curLen = sys.maxsize
                     for _node2 in _nodes:
@@ -201,9 +201,8 @@ class Topo:
         linkId = 0
         for _edge in _edges:
             self.edges.append((self.nodes[_edge[0]], self.nodes[_edge[1]]))
-            rand = int(random.random()*5+3) # 3~7
-            # rand = int(random.random()*6+3) # 3-10
-            rand = 3
+            # Paper: "qubit transmission capacity between 3-7" per link
+            rand = int(random.random()*5+3)  # uniform in {3, 4, 5, 6, 7}
             self.link_capacity[(_edge[0], _edge[1])] = rand
             self.link_capacity[(_edge[1], _edge[0])] = rand
 
@@ -434,32 +433,19 @@ class Topo:
         # dist = lambda x, y: sum((a-b)**2 for a, b in zip(x, y))**0.5
         
         checker = TopoConnectionChecker()
-        graphFileName = 'graph' + str(n) +'.pickle'
-        file = 'SurfnetCore.gml'
-        name = 'waxman'
+        name    = 'waxman'
+        # Paper: 50-node Waxman network, 2000 km × 4000 km rectangular area (1:2 ratio).
+        # beta=0.9 (high local connectivity), alpha=0.1 (moderate long-range decay),
+        # domain=(0,0,1,2) replicates the 1:2 aspect ratio.
         while True:
-            try:
-                G = G = pickle.load(open(graphFileName, 'rb'))
-            except:
-                G = nx.waxman_graph(n, beta=0.9, alpha=0.01, domain=(0, 0, 1, 2))
-                pickle.dump(G, open(graphFileName, 'wb'))
-            
-
-            G = nx.waxman_graph(n, beta=0.9, alpha=0.001, domain=(0, 0, 1, 1))
-
-            # name = 'surfnet'
-            # G = nx.read_gml(file)
-
-            # G = Topo.create_custom_graph()
-            print('leeeen ' , len(G.edges))
-            # Topo.draw_graph(G)
-
-            topo = Topo(G, q, k, a, degree , name)
+            G = nx.waxman_graph(n, beta=0.9, alpha=0.1, domain=(0, 0, 1, 2))
+            print(f'[Topo.generate] Waxman edges: {len(G.edges)}')
+            topo = Topo(G, q, k, a, degree, name)
             checker.setTopo(topo)
             if checker.checkConnected():
                 break
             else:
-                print("topo is not connected", file = sys.stderr)
+                print('topo is not connected — regenerating', file=sys.stderr)
         return topo
     def create_custom_graph():
 
