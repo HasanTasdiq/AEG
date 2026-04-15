@@ -113,7 +113,8 @@ class SP(AlgorithmBase):
         print(f'[SP] p2 end — time slot {self.timeSlot}')
 
     def p4(self):
-        success_req = 0
+        success_req    = 0
+        total_ent      = 0   # established entanglements across all paths this slot
         for _, width, p, req_time in self.pathsSortedDynamically:
             src, dst = p[0], p[-1]
             old_count = len(self.topo.getEstablishedEntanglements(src, dst))
@@ -143,7 +144,9 @@ class SP(AlgorithmBase):
                 for l1, l2 in zip(prev_links, next_links):
                     curr.attemptSwapping(l1, l2)
 
-            succ = len(self.topo.getEstablishedEntanglements(src, dst)) - old_count
+            new_count = len(self.topo.getEstablishedEntanglements(src, dst))
+            succ      = new_count - old_count
+            total_ent += new_count
             if succ > 0 or len(p) == 2:
                 key = (src, dst, req_time)
                 if key in self.requests:
@@ -151,6 +154,9 @@ class SP(AlgorithmBase):
                     self.requests.remove(key)
                     success_req += 1
 
+        # All three per-slot lists must grow together so AlgorithmResult.Avg
+        # can index them in lockstep without IndexError.
+        self.result.entanglementPerRound.append(total_ent)
         self.result.successfulRequestPerRound.append(success_req)
         self.result.successfulRequest        += success_req
 

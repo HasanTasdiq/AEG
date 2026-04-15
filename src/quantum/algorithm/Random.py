@@ -96,10 +96,11 @@ class RandomLinkSelection(AlgorithmBase):
     def p4(self):
         if self.srcDstPairs:
             self.EPS()
-            self.ELS()   # appends to successfulRequestPerRound
+            self.ELS()   # appends to successfulRequestPerRound AND entanglementPerRound
         else:
-            # No pending requests this slot — keep list length in sync
+            # No pending requests — keep all three per-slot lists in sync
             self.result.successfulRequestPerRound.append(0)
+            self.result.entanglementPerRound.append(0)
         self._print_result()   # always appends to remainRequestPerRound
         return self.result
 
@@ -345,6 +346,7 @@ class RandomLinkSelection(AlgorithmBase):
 
         # Execute swaps and count successes
         success_req = 0
+        total_ent   = 0   # total established end-to-end entanglements this slot
         used_links  = set()
         for sd in self.srcDstPairs:
             src, dst = sd
@@ -357,6 +359,7 @@ class RandomLinkSelection(AlgorithmBase):
                     node.attemptSwapping(l1, l2)
 
                 success_paths = self.topo.getEstablishedEntanglementsWithLinks(src, dst)
+                total_ent    += len(success_paths)
                 for sp in success_paths:
                     for node, link in sp:
                         if link:
@@ -382,11 +385,13 @@ class RandomLinkSelection(AlgorithmBase):
                         if lnk:
                             lnk.clearPhase4Swap()
 
-        self.result.usedLinks              += len(used_links)
+        self.result.usedLinks                  += len(used_links)
+        self.result.entanglementPerRound.append(total_ent)
         self.result.successfulRequestPerRound.append(success_req)
-        self.result.successfulRequest      += success_req
+        self.result.successfulRequest          += success_req
         self._filter_requests()
-        print(f'[Random] ELS done — successful: {success_req}')
+        print(f'[Random] ELS done — slot {self.timeSlot} | '
+              f'entanglements={total_ent} | successful={success_req}')
 
     def _filter_requests(self):
         self.requests = [
