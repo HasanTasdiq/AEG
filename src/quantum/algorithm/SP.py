@@ -33,6 +33,7 @@ class SP(AlgorithmBase):
     def prepare(self):
         self.totalTime = 0
         self.requests.clear()
+        self.updateNeighbors()   # ensure neighbor lists are fresh after deepcopy
 
     def p2(self):
         self.pathsSortedDynamically.clear()
@@ -156,12 +157,15 @@ class SP(AlgorithmBase):
         remain_time = sum(self.timeSlot - t for _, _, t in self.requests)
         self.topo.clearAllEntanglements()
 
+        # Always append so list length matches successfulRequestPerRound in every slot
+        self.result.remainRequestPerRound.append(
+            len(self.requests) / self.totalNumOfReq if self.totalNumOfReq > 0 else 0)
+
         if self.totalNumOfReq > 0:
-            self.result.remainRequestPerRound.append(
-                len(self.requests) / self.totalNumOfReq)
             self.result.waitingTime = (
                 (self.totalTime + remain_time) / self.totalNumOfReq + 1)
             self.result.usedQubits = self.totalUsedQubits / self.totalNumOfReq
 
-        print(f'[SP] p4 end — successful requests this slot: {success_req}')
+        print(f'[SP] p4 end — slot {self.timeSlot} | '
+              f'success={success_req} | remaining={len(self.requests)}')
         return self.result

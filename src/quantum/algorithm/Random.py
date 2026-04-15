@@ -96,8 +96,11 @@ class RandomLinkSelection(AlgorithmBase):
     def p4(self):
         if self.srcDstPairs:
             self.EPS()
-            self.ELS()
-        self._print_result()
+            self.ELS()   # appends to successfulRequestPerRound
+        else:
+            # No pending requests this slot — keep list length in sync
+            self.result.successfulRequestPerRound.append(0)
+        self._print_result()   # always appends to remainRequestPerRound
         return self.result
 
     # ── edgeSuccessfulEntangle ────────────────────────────────────────────────
@@ -227,7 +230,9 @@ class RandomLinkSelection(AlgorithmBase):
 
         for sd in self.srcDstPairs:
             for k in range(numOfFlow[sd]):
-                self.tki[sd][k] = self.tki_LP[sd][k] >= random.random()
+                tki_val = self.tki_LP[sd][k]
+                # Bernoulli: commit to this flow instance with prob = tki_val
+                self.tki[sd][k] = tki_val >= random.random()
                 if not self.tki[sd][k]:
                     continue
                 paths = self._find_paths_for_eps(sd, k)
@@ -235,8 +240,12 @@ class RandomLinkSelection(AlgorithmBase):
                     for v in self.topo.nodes:
                         self.fki[sd][k][(u, v)] = 0
                 for path in paths:
-                    width  = path[-1]
-                    select = (width / self.tki_LP[sd][k]) >= random.random()
+                    width = path[-1]
+                    # Guard: if tki_val is 0 no path should have been found,
+                    # but skip division if it somehow is zero to avoid ZeroDivisionError
+                    if tki_val <= 0:
+                        continue
+                    select = (width / tki_val) >= random.random()
                     if not select:
                         continue
                     path = path[:-1]
