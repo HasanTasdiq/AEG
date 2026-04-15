@@ -1,0 +1,5 @@
+pdf/
+*.txt
+!data/.gitkeep
+__pycache__
+status.txt
