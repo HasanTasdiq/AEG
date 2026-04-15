@@ -1,19 +1,27 @@
 """
 Run.py — Simulation entry point for AEG paper experiments.
 
-Algorithm lineup (5 algorithms, matching paper figures):
+Algorithm lineup (6 algorithms — full ablation):
   ILP          — Integer Linear Programming link selection (= REPS baseline)
   Random       — Random link selection (50% per link), same path selection as ILP
   SP           — Shortest-path (greedy hop-count) routing
-  AEG_LS       — AEG with RL-based Link Selection only (no caching, no proactive swap)
-  AEG_PES      — Full AEG: RL link selection + entanglement caching + proactive swapping
+  AEG_LS       — AEG Link Selection only (RL, no caching, no proactive swap)
+  AEG_EC       — AEG Entanglement Caching (RL + caching, no proactive swap)
+  AEG_PES      — Full AEG: RL + entanglement caching + proactive swapping
 
 Paper figures reproduced:
   Fig. 4  → entanglement lifetime sweep (runLabel index 8)
-  Fig. 5  → requests/slot sweep (runLabel index 0)  — ablation: ILP, Random, AEG_LS, SP, AEG_PES
+  Fig. 5  → requests/slot sweep (runLabel index 0)
   Fig. 5b → swap probability sweep (runLabel index 4)
   Fig. 5c → alpha sweep (runLabel index 5)
   Fig. 6  → runtime comparison (same data as Fig. 5, logged separately)
+
+Recommended training settings for DQN convergence:
+  ttime = 200, times = 10  →  2,000 slots per sweep value.
+  The DQN model is saved/loaded across runs so learning accumulates.
+  Minimum to see convergence: ttime ≥ 100 (otherwise replay buffer
+  never fills MIN_REPLAY_MEMORY_SIZE=200 with ~150 edges/slot).
+  Paper used ~200,000 total time slots for full convergence.
 """
 
 import multiprocessing
@@ -26,6 +34,7 @@ from ILP      import ILP
 from Random   import RandomLinkSelection
 from SP       import SP
 from AEG_LS   import AEG_LS
+from AEG_EC   import AEG_EC
 from AEG_PES  import AEG_PES
 from SEER_cache3_3 import SEERCACHE3_3    # kept for GENI cloud experiments (silly.sh)
 from CachedEntanglement import CachedEntanglement
@@ -40,10 +49,12 @@ import time
 import os.path
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-ttime  = 10       # time slots per trial
+# For paper-quality results: ttime=200, times=10.
+# Quick smoke-test: ttime=50, times=1.
+ttime  = 200      # time slots per trial  (paper: ~20,000 for full convergence)
 ttime2 = 50
 step   = 50
-times  = 1        # independent trials (set to 10 for paper-quality averaging)
+times  = 10       # independent trials averaged together
 nodeNo = 50       # nodes (paper: 50-node Waxman network)
 alpha_ = 0.0002   # default entanglement-generation alpha
 degree = 6
@@ -120,22 +131,25 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     topo.setQ(q)
     topo.setAlpha(alpha)
 
-    # ── Algorithm definitions ─────────────────────────────────────────────────
+    # ── Algorithm definitions (ablation ladder) ───────────────────────────────
     algorithms = [
-        # Paper baseline: Integer Linear Programming link selection
+        # Baseline: ILP-based link selection (REPS)
         ILP(copy.deepcopy(topo), name='ILP'),
 
-        # Paper baseline: Random link selection (50% per link)
+        # Baseline: random link selection
         RandomLinkSelection(copy.deepcopy(topo), name='Random'),
 
-        # Paper baseline: Shortest path (greedy hop-count) routing
+        # Baseline: greedy shortest-path routing
         SP(copy.deepcopy(topo), name='SP'),
 
-        # AEG ablation: RL link selection only (no caching, no proactive swap)
-        # AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
+        # AEG-LS: RL link selection only (no caching, no proactive swap)
+        AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
 
-        # Full AEG: RL link selection + entanglement caching + proactive swapping
-        # AEG_PES(copy.deepcopy(topo), name='AEG_PES'),
+        # AEG-EC: RL link selection + entanglement caching (no proactive swap)
+        AEG_EC(copy.deepcopy(topo), param='ten', name='AEG_EC'),
+
+        # AEG-PES: full AEG — RL + caching + proactive swapping
+        AEG_PES(copy.deepcopy(topo), param='ten', name='AEG_PES'),
     ]
 
     algorithms[0].r       = r

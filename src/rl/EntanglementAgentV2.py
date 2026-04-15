@@ -32,16 +32,20 @@ except ImportError:
 from RoutingEnv import RoutingEnv
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
+# V2 variant: no distance matrix in state → smaller state space → can converge
+# faster and tolerate a shorter epsilon schedule.
+
 DISCOUNT               = 0.95
-REPLAY_MEMORY_SIZE     = 5000
-MIN_REPLAY_MEMORY_SIZE = 1000
-MINIBATCH_SIZE         = 128
-UPDATE_TARGET_EVERY    = 50
+REPLAY_MEMORY_SIZE     = 10_000
+MIN_REPLAY_MEMORY_SIZE = 200
+MINIBATCH_SIZE         = 64
+UPDATE_TARGET_EVERY    = 100
 
 EPSILON_START          = 0.5
+EPSILON_MIN            = 0.05   # floor for residual exploration
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 100   # faster decay — no distance info, simpler problem
-EPSILON_DECAY_VALUE    = EPSILON_START / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
+END_EPSILON_DECAYING   = 300    # simpler state → converges faster than V1's 500
+EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 random.seed(1)
 np.random.seed(1)
@@ -171,7 +175,7 @@ class EntanglementAgentV2:
                 (action, time_slot, state, next_state))
 
         if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
-            self.epsilon = max(0.0, self.epsilon - EPSILON_DECAY_VALUE)
+            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
 
         self.link_qs = {}
         print(f'[EntanglementAgentV2] learn_and_predict step done in {time.time()-t0:.2f}s')

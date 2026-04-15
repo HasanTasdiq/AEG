@@ -34,16 +34,36 @@ except ImportError:
 from RoutingEnv import RoutingEnv
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
-DISCOUNT               = 0.95
-REPLAY_MEMORY_SIZE     = 5000   # max transitions stored
-MIN_REPLAY_MEMORY_SIZE = 1000   # start training only after this many transitions
-MINIBATCH_SIZE         = 128
-UPDATE_TARGET_EVERY    = 50     # sync target network every N training steps
+# Tuned for ttime=200, times=10 (2000 time slots per sweep value).
+# The model is saved/loaded across runs so learning accumulates.
+#
+# Paper values: β=0.1 (learning rate, handled by Adam), γ=0.95 (discount),
+#               200,000 total time slots.
 
+DISCOUNT               = 0.95  # γ — paper value ✓
+
+# Replay buffer: keep enough history for varied sampling.
+# With ~150 edges × 200 slots = 30,000 transitions per trial; 10k cap avoids
+# over-weighting stale transitions from early random exploration.
+REPLAY_MEMORY_SIZE     = 10_000
+
+# Start training quickly: with 150 edges/slot we hit 200 after 1–2 time slots,
+# so the DQN begins learning almost immediately rather than waiting.
+MIN_REPLAY_MEMORY_SIZE = 200
+
+MINIBATCH_SIZE         = 64    # smaller batch → more frequent weight updates early on
+
+# Sync the target network less often for more stable Bellman targets.
+UPDATE_TARGET_EVERY    = 100
+
+# Exploration schedule:
+#   Explore for ~25% of the recommended 2000-slot run (first 500 slots ≈ 2–3 trials).
+#   After that, exploit with 5% residual exploration so the policy never fully freezes.
 EPSILON_START          = 0.5
+EPSILON_MIN            = 0.05  # never drop below 5% random actions
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 250    # full state (incl. distances) — trains longer
-EPSILON_DECAY_VALUE    = EPSILON_START / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
+END_EPSILON_DECAYING   = 500   # full state (incl. distances) — decays slower
+EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 random.seed(1)
 np.random.seed(1)
@@ -187,7 +207,7 @@ class EntanglementAgent:
 
         # Decay exploration
         if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
-            self.epsilon = max(0.0, self.epsilon - EPSILON_DECAY_VALUE)
+            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
 
         self.link_qs = {}
         print(f'[EntanglementAgent] learn_and_predict step done in {time.time()-t0:.2f}s')
