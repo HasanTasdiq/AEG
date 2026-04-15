@@ -174,8 +174,7 @@ class EntanglementAgentV2:
             self.last_action_table.setdefault(link, []).append(
                 (action, time_slot, state, next_state))
 
-        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
-            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
+
 
         self.link_qs = {}
         print(f'[EntanglementAgentV2] learn_and_predict step done in {time.time()-t0:.2f}s')
@@ -200,7 +199,8 @@ class EntanglementAgentV2:
                 e for e in self.last_action_table[link]
                 if self.env.algo.timeSlot - e[1] < lifetime
             ]
-
+        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
+            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
         print(f'[EntanglementAgentV2] update_reward done in {time.time()-t0:.2f}s')
 
     def save_model(self):
