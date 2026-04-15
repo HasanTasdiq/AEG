@@ -1,7 +1,10 @@
 import numpy as np
 import math
 import os
-import latex
+try:
+    import latex
+except ImportError:
+    latex = None
 import matplotlib.pyplot as plt
 import matplotlib.transforms
 import matplotlib

@@ -1,6 +1,10 @@
 import numpy as np
-from gym import Env
-from gym.spaces import Box, Discrete
+try:
+    from gymnasium import Env
+    from gymnasium.spaces import Box, Discrete
+except ImportError:
+    from gym import Env
+    from gym.spaces import Box, Discrete
 import random
 import sys
 sys.path.append("..")

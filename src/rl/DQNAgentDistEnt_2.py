@@ -1,9 +1,13 @@
 import numpy as np
 
-from keras.models import Sequential, load_model
-from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten
-from keras.optimizers import Adam
-from keras import Input
+try:
+    from tensorflow.keras.models import Sequential, load_model
+    from tensorflow.keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten
+    from tensorflow.keras.optimizers import Adam
+except ImportError:
+    from keras.models import Sequential, load_model
+    from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten
+    from keras.optimizers import Adam
 from collections import deque
 import time
 import random
