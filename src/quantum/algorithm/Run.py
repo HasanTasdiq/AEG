@@ -40,7 +40,7 @@ import time
 import os.path
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-ttime  = 50       # time slots per trial
+ttime  = 10       # time slots per trial
 ttime2 = 50
 step   = 50
 times  = 1        # independent trials (set to 10 for paper-quality averaging)
@@ -76,7 +76,8 @@ Xlabels = [
 ]
 
 # Which X-sweeps to actually run  (0=Fig5, 4=Fig5b, 5=Fig5c, 8=Fig4)
-runLabel = [0, 4, 5, 8]
+# runLabel = [0, 4, 5, 8]
+runLabel = [0]
 
 # Algorithms that use the shorter ttime2 window
 toRunLessAlgos = ['ILP']
@@ -131,10 +132,10 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         SP(copy.deepcopy(topo), name='SP'),
 
         # AEG ablation: RL link selection only (no caching, no proactive swap)
-        AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
+        # AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
 
         # Full AEG: RL link selection + entanglement caching + proactive swapping
-        AEG_PES(copy.deepcopy(topo), name='AEG_PES'),
+        # AEG_PES(copy.deepcopy(topo), name='AEG_PES'),
     ]
 
     algorithms[0].r       = r
@@ -286,8 +287,13 @@ if __name__ == '__main__':
             Ydata.append(results[Xp])
 
         # ── Write timeslot success file ───────────────────────────────────────
+        ts_filename  = 'Timeslot_#successRequest.txt'
+        ts_filepath  = targetFilePath + ts_filename
         sampleRounds = list(range(0, ttime, step))
-        F = open(targetFilePath + 'Timeslot_#successRequest.txt', 'w')
+        print(f'\n{"="*60}')
+        print(f'[WRITE] {ts_filepath}')
+        print(f'{"="*60}')
+        F = open(ts_filepath, 'w')
         for roundIndex in sampleRounds:
             Xaxis = str(roundIndex)
             Yaxis = []
@@ -298,18 +304,31 @@ if __name__ == '__main__':
                             roundIndex:roundIndex + step]) / step)
                 except Exception:
                     Yaxis.append(0)
-            F.write(Xaxis + str(Yaxis).replace('[', ' ').replace(']', '\n').replace(',', ''))
+            row = Xaxis + str(Yaxis).replace('[', ' ').replace(']', '\n').replace(',', '')
+            F.write(row)
+            print(f'  timeslot={roundIndex:>4}  values={[f"{v:.3f}" for v in Yaxis]}')
         F.close()
+        print(f'[DONE]  {ts_filepath}')
 
         # ── Write per-metric files ────────────────────────────────────────────
+        print(f'\n[WRITE] Per-metric files for X-axis: {Xlabel}')
+        print(f'{"─"*60}')
         for Ylabel in Ylabels:
             filename = f'{Xlabel}_{Ylabel}.txt'
-            mode = 'w' if os.path.isfile(targetFilePath + filename) else 'a'
-            F = open(targetFilePath + filename, mode)
+            filepath = targetFilePath + filename
+            mode     = 'w' if os.path.isfile(filepath) else 'a'
+            print(f'  {filename}  (mode={mode})')
+            F = open(filepath, mode)
             for i, Xp in enumerate(Xparameters[XlabelIndex]):
                 Xaxis = str(Xp)
                 Yaxis = [ar.toDict()[Ylabel] for ar in Ydata[i]]
-                F.write(Xaxis + str(Yaxis).replace('[', ' ').replace(']', '\n').replace(',', ''))
+                row   = Xaxis + str(Yaxis).replace('[', ' ').replace(']', '\n').replace(',', '')
+                F.write(row)
+                algo_names = [type(a).__name__ for a in Ydata[i]] if Ydata[i] else []
+                print(f'    X={Xp}  {Ylabel}={[f"{v:.4g}" for v in Yaxis]}')
             F.close()
 
-    print(f'Done — total time: {(time.time() - t1) / 3600:.2f} hours')
+    elapsed = time.time() - t1
+    print(f'\n{"="*60}')
+    print(f'Done — total time: {elapsed/3600:.2f} h  ({elapsed:.1f} s)')
+    print(f'{"="*60}')
