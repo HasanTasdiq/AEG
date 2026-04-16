@@ -49,14 +49,23 @@ import time
 import os.path
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-# For paper-quality results: ttime=200, times=10.
-# Quick smoke-test: ttime=50, times=1.
-ttime  = 200      # time slots per trial  (paper: ~20,000 for full convergence)
-ttime2 = 50
-step   = 50
-times  = 10       # independent trials averaged together
+# AEG-LS full-training configuration.
+#
+# Why ttime=200, times=10?
+#   50-node network, degree=6, avg 5 links/edge → ~150 edges/slot
+#   150 transitions × 200 slots × 10 trials = 300,000 transitions — exceeds
+#   the paper's 200,000-slot target and fills the replay buffer many times over.
+#   MIN_REPLAY_MEMORY_SIZE=200 → training starts after slot 2 of the first trial.
+#   END_EPSILON_DECAYING=500 → pure exploration for first 500 slots (2.5 trials),
+#   then ε floors at 5% for the remaining 1,500 slots (exploitation phase).
+#
+# Quick smoke-test: set ttime=20, times=1.
+ttime  = 200      # time slots per trial
+ttime2 = 200      # same cap — AEG_LS needs the full window for DQN training
+step   = 50       # sample interval for timeslot success chart (4 points: 0,50,100,150)
+times  = 10       # independent trials — also multiplies DQN training data
 nodeNo = 50       # nodes (paper: 50-node Waxman network)
-alpha_ = 0.0002   # default entanglement-generation alpha
+alpha_ = 0.0002   # default entanglement-generation alpha (P≈0.819 at 100 km)
 degree = 6
 
 # Sweep ranges — one list per X-axis in the paper
@@ -86,12 +95,12 @@ Xlabels = [
     "preSwapCapacity",      # 10
 ]
 
-# Which X-sweeps to actually run  (0=Fig5, 4=Fig5b, 5=Fig5c, 8=Fig4)
-# runLabel = [0, 4, 5, 8]
-runLabel = [0]
+# Run all four paper sweeps: Fig.5 (requests), Fig.5b (swap prob),
+# Fig.5c (alpha), Fig.4 (entanglement lifetime)
+runLabel = [0, 4, 5, 8]
 
-# Algorithms that use the shorter ttime2 window
-toRunLessAlgos = ['ILP']
+# No non-RL baselines in this run — no algorithms need a shortened window
+toRunLessAlgos = []
 
 
 # ── Per-trial worker ──────────────────────────────────────────────────────────
@@ -131,29 +140,25 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     topo.setQ(q)
     topo.setAlpha(alpha)
 
-    # ── Algorithm definitions (ablation ladder) ───────────────────────────────
+    # ── AEG-LS only — full DQN training ──────────────────────────────────────
+    # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        # Baseline: ILP-based link selection (REPS)
-        ILP(copy.deepcopy(topo), name='ILP'),
-
-        # Baseline: random link selection
-        RandomLinkSelection(copy.deepcopy(topo), name='Random'),
-
-        # Baseline: greedy shortest-path routing
-        SP(copy.deepcopy(topo), name='SP'),
-
-        # AEG-LS: RL link selection only (no caching, no proactive swap)
         AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
 
-        # AEG-EC: RL link selection + entanglement caching (no proactive swap)
-        AEG_EC(copy.deepcopy(topo), param='ten', name='AEG_EC'),
+        # -- baselines (uncomment to compare) ---------------------------------
+        # ILP(copy.deepcopy(topo), name='ILP'),
+        # RandomLinkSelection(copy.deepcopy(topo), name='Random'),
+        # SP(copy.deepcopy(topo), name='SP'),
 
-        # AEG-PES: full AEG — RL + caching + proactive swapping
-        AEG_PES(copy.deepcopy(topo), param='ten', name='AEG_PES'),
+        # -- AEG ablation variants (uncomment to compare) ---------------------
+        # AEG_EC(copy.deepcopy(topo),  param='ten', name='AEG_EC'),
+        # AEG_PES(copy.deepcopy(topo), param='ten', name='AEG_PES'),
     ]
 
-    algorithms[0].r       = r
-    algorithms[0].density = SocialNetworkDensity
+    # r and density are ILP-specific; set only if ILP is in the list
+    if hasattr(algorithms[0], 'r'):
+        algorithms[0].r       = r
+        algorithms[0].density = SocialNetworkDensity
 
     global times
     results  = [[] for _ in range(len(algorithms))]
