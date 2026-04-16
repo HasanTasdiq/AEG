@@ -217,7 +217,9 @@ class EntanglementAgent:
             entry = (action, time_slot, state, next_state)
             self.last_action_table.setdefault(link, []).append(entry)
 
-
+        # Decay epsilon once per time slot (after all links have been acted on)
+        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
+            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
 
         self.link_qs = {}
         print(f'[EntanglementAgent] learn_and_predict step done in {time.time()-t0:.2f}s')
@@ -240,15 +242,13 @@ class EntanglementAgent:
         self._train(terminal_state=False)
 
         # Prune entries older than entanglement lifetime
+        # (epsilon decay belongs in _learn_and_predict_step, not here)
         lifetime = 10
         for link in self.last_action_table:
             self.last_action_table[link] = [
                 e for e in self.last_action_table[link]
                 if self.env.algo.timeSlot - e[1] < lifetime
             ]
-        # Decay exploration
-        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
-            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
         print(f'[EntanglementAgent] update_reward done in {time.time()-t0:.2f}s')
 
     # ── Persistence & FedAvg support ─────────────────────────────────────────
