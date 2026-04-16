@@ -49,8 +49,11 @@ class AEG_LS(AlgorithmBase):
         self.entAgent         = None   # created in prepare()
 
     def prepare(self):
-        """Initialise the EntanglementAgent at the start of the first time slot."""
-        self.entAgent = EntanglementAgent(self, pid=0)
+        """Initialise the EntanglementAgent at the start of the first time slot.
+        slot_offset is set by Run.py before the subprocess starts so that epsilon
+        initialises at the correct point in the global decay schedule."""
+        slot_offset = getattr(self, 'slot_offset', 0)
+        self.entAgent = EntanglementAgent(self, pid=0, global_slot_offset=slot_offset)
 
     def genNameByComma(self, varName, parName):
         return (varName + str(parName)).replace(' ', '')

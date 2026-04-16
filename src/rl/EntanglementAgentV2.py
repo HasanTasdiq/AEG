@@ -61,8 +61,9 @@ class EntanglementAgentV2:
     Faster exploration than EntanglementAgent.
     """
 
-    def __init__(self, algo, pid=0):
-        print(f'[EntanglementAgentV2] initialising for algorithm: {algo.name}')
+    def __init__(self, algo, pid=0, global_slot_offset=0):
+        print(f'[EntanglementAgentV2] init  algo={algo.name}  '
+              f'global_slot_offset={global_slot_offset}')
         self.env = RoutingEnv(algo)
         N = self.env.SIZE
 
@@ -82,7 +83,9 @@ class EntanglementAgentV2:
         self.target_update_counter = 0
         self.last_action_table     = {}
         self.link_qs               = {}
-        self.epsilon               = EPSILON_START
+
+        elapsed      = max(0, global_slot_offset - START_EPSILON_DECAYING)
+        self.epsilon = max(EPSILON_MIN, EPSILON_START - EPSILON_DECAY_VALUE * elapsed)
 
     def _create_model(self):
         try:
@@ -206,3 +209,13 @@ class EntanglementAgentV2:
     def save_model(self):
         self.model.save(self.model_name)
         print(f'[EntanglementAgentV2] model saved: {self.model_name}')
+
+    def save_model_to(self, path):
+        self.model.save(path)
+
+    def get_weights(self):
+        return [w.copy() for w in self.model.get_weights()]
+
+    def set_weights(self, weights):
+        self.model.set_weights(weights)
+        self.target_model.set_weights(weights)

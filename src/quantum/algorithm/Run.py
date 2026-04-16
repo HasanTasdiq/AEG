@@ -49,24 +49,35 @@ import time
 import os.path
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-# AEG-LS full-training configuration.
+# FedAvg (Federated Averaging) parallel training for AEG-LS.
 #
-# Why ttime=200, times=10?
-#   50-node network, degree=6, avg 5 links/edge → ~150 edges/slot
-#   150 transitions × 200 slots × 10 trials = 300,000 transitions — exceeds
-#   the paper's 200,000-slot target and fills the replay buffer many times over.
-#   MIN_REPLAY_MEMORY_SIZE=200 → training starts after slot 2 of the first trial.
-#   END_EPSILON_DECAYING=500 → pure exploration for first 500 slots (2.5 trials),
-#   then ε floors at 5% for the remaining 1,500 slots (exploitation phase).
+# Training structure:
+#   rounds  — sequential FedAvg rounds; model accumulates across rounds
+#   workers — parallel workers *within* each round; weights averaged after
 #
-# Quick smoke-test: set ttime=20, times=1.
-ttime  = 200      # time slots per trial
-ttime2 = 200      # same cap — AEG_LS needs the full window for DQN training
-step   = 50       # sample interval for timeslot success chart (4 points: 0,50,100,150)
-times  = 10       # independent trials — also multiplies DQN training data
-nodeNo = 50       # nodes (paper: 50-node Waxman network)
-alpha_ = 0.0002   # default entanglement-generation alpha (P≈0.819 at 100 km)
-degree = 6
+#   Round 1: workers 0,1,2 run in parallel (different request patterns)
+#            → each saves worker snapshot → main process averages weights
+#            → shared model updated
+#   Round 2: all workers load the averaged model → train 200 more slots
+#            → average again → ...
+#
+# Total training = rounds × workers × ttime slots
+#   Default (rounds=5, workers=3, ttime=200): 3,000 slots × ~150 edges
+#   = 450,000 transitions  — 2× paper target, rounds × speedup vs sequential
+#
+# Epsilon continuity: each worker is initialised at the correct point in the
+#   decay schedule via slot_offset = round_idx × ttime, so exploration decays
+#   smoothly across rounds rather than restarting from EPSILON_START each round.
+#
+# Quick smoke-test: rounds=1, workers=2, ttime=20
+ttime   = 200     # time slots per worker trial
+ttime2  = 200     # cap for non-DQN algorithms (matches ttime when running AEG-LS only)
+step    = 50      # timeslot chart sample interval → points at 0, 50, 100, 150
+rounds  = 5       # sequential FedAvg rounds (model saved/averaged between rounds)
+workers = 3       # parallel workers per round (set to cpu_count() for max speed)
+nodeNo  = 50      # nodes (paper: 50-node Waxman network)
+alpha_  = 0.0002  # default entanglement-generation alpha (P≈0.819 at 100 km)
+degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
 numOfRequestPerRound  = [25, 30, 35]                    # Fig. 5 / Fig. 6
@@ -104,7 +115,12 @@ toRunLessAlgos = []
 
 
 # ── Per-trial worker ──────────────────────────────────────────────────────────
-def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data):
+def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data,
+              worker_model_path=None):
+    """
+    worker_model_path: if provided (FedAvg mode), always save the final model
+    here regardless of performance so the main process can average weights.
+    """
     timeSlot = ttime
     global ttime2
     if algo.name in toRunLessAlgos:
@@ -115,18 +131,74 @@ def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data):
 
     resultDict[pid] = result
 
-    success_req   = sum(result.successfulRequestPerRound[i] for i in range(timeSlot))
-    max_key       = (algo.name + str(len(algo.topo.nodes))
-                     + str(algo.topo.alpha) + str(algo.topo.q) + 'max_success')
+    success_req = sum(result.successfulRequestPerRound[i] for i in range(timeSlot))
+    max_key     = (algo.name + str(len(algo.topo.nodes))
+                   + str(algo.topo.alpha) + str(algo.topo.q) + 'max_success')
 
     print(f'pid={pid}  algo={algo.name}  success={success_req}  '
           f'best_so_far={shared_data[max_key] / timeSlot:.1f}')
 
-    # Save the DQN model when a new best is reached
     if hasattr(algo, 'entAgent') and algo.entAgent is not None:
+        # FedAvg: always save worker snapshot so main process can average
+        if worker_model_path:
+            algo.entAgent.save_model_to(worker_model_path)
+        # Also keep the global best for fallback / evaluation
         if success_req > shared_data[max_key]:
             algo.entAgent.save_model()
             shared_data[max_key] = success_req
+
+
+# ── FedAvg weight averaging ───────────────────────────────────────────────────
+def fedavg_models(worker_paths, shared_path):
+    """
+    Load models saved by each parallel worker, average their weights
+    element-wise (FedAvg), and write the result to shared_path.
+    This is the model that all workers will load at the start of the next round.
+    Temporary worker files are deleted after averaging.
+    """
+    try:
+        from tensorflow.keras.models import load_model as _load
+    except ImportError:
+        from keras.models import load_model as _load
+
+    weight_lists = []
+    valid_paths  = []
+    for p in worker_paths:
+        if os.path.exists(p):
+            try:
+                m = _load(p)
+                weight_lists.append(m.get_weights())
+                valid_paths.append(p)
+            except Exception as e:
+                print(f'[FedAvg] could not load {p}: {e}')
+
+    if not weight_lists:
+        print('[FedAvg] no valid worker snapshots — skipping averaging')
+        return
+
+    # Element-wise mean across all workers
+    avg_weights = [
+        np.mean([w[layer] for w in weight_lists], axis=0)
+        for layer in range(len(weight_lists[0]))
+    ]
+
+    # Apply averaged weights to first valid model and save as shared model
+    base = _load(valid_paths[0])
+    base.set_weights(avg_weights)
+    base.save(shared_path)
+    print(f'[FedAvg] averaged {len(weight_lists)} workers → {shared_path}')
+
+    # Clean up temporary worker snapshots
+    for p in valid_paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _agent_model_path(algo_name, n_nodes, alpha_val, q_val):
+    """Compute the shared model filename for a given (algo, topology) tuple."""
+    return f'{algo_name}_{n_nodes}_{alpha_val}_{q_val}_EntanglementAgent.keras'
 
 
 # ── Single-parameter simulation run ──────────────────────────────────────────
@@ -174,51 +246,84 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         shared_data[key] = 0
 
     pid = 0
-    # ── Sequential trials ─────────────────────────────────────────────────────
-    # Each trial runs to COMPLETION before the next one starts.
-    # This is critical for DQN-based algorithms (AEG_LS / AEG_EC / AEG_PES):
-    #   - Trial N finishes → best model is saved to disk
-    #   - Trial N+1 starts → EntanglementAgent.prepare() loads that saved model
-    #   - Training accumulates across all `times` trials
+    # ── FedAvg parallel training ──────────────────────────────────────────────
+    # Structure:  rounds (sequential)  ×  workers (parallel within each round)
     #
-    # With the old parallel design all trials started simultaneously, so every
-    # trial loaded an uninitialised model and 9 out of 10 training runs were
-    # discarded.  Sequential execution turns `times` into genuine training
-    # epochs: 10 trials × 200 slots × ~150 edges = 300,000 transitions.
-    for trial_idx in range(times):
-        ids = {i: [] for i in range(ttime_)}
-        if FixedRequests is not None:
-            ids = FixedRequests
-        else:
-            for i in range(ttime_):
-                if i < rtime:
-                    for _ in range(numOfRequestPerRound):
-                        a = sample(range(numOfNode), 2)
-                        ids[i].append((a[0], a[1]))
+    # Each round:
+    #   1. `workers` processes start simultaneously, each training on an
+    #      independently sampled request sequence — diversity helps generalisation
+    #   2. Every worker saves its final model to a unique temp file
+    #   3. Main process averages all worker weights (FedAvg)
+    #   4. Averaged model saved as the shared .keras file
+    #   5. Next round: every worker loads the shared model → continues training
+    #
+    # Epsilon continuity: each worker receives slot_offset = round_idx × ttime
+    # so it initialises epsilon at the correct point in the global decay schedule
+    # instead of restarting from EPSILON_START every round.
+    global rounds, workers
 
-        # Algorithms within one trial can still run in parallel (each has its
-        # own model file keyed on algo.name + topo params).
-        trial_jobs = []
-        for algoIndex, base_algo in enumerate(algorithms):
-            algo     = copy.deepcopy(base_algo)
-            requests = {i: [] for i in range(ttime_)}
-            for i in range(rtime):
-                for (src, dst) in ids[i]:
-                    requests[i].append(
-                        (algo.topo.nodes[src], algo.topo.nodes[dst]))
-            pid += 1
-            job = multiprocessing.Process(
-                target=runThread,
-                args=(algo, requests, algoIndex, ttime_, pid,
-                      resultDicts[algoIndex], shared_data))
-            trial_jobs.append(job)
+    for round_idx in range(rounds):
+        print(f'\n{"="*60}')
+        print(f'[FedAvg] Round {round_idx + 1}/{rounds}  '
+              f'({workers} parallel workers × {ttime_} slots)')
+        print(f'{"="*60}')
 
-        print(f'\n[Run] trial {trial_idx + 1}/{times} — starting')
-        for job in trial_jobs:
+        round_jobs          = []
+        worker_model_paths  = [[] for _ in algorithms]   # per-algo worker snapshots
+        slot_offset         = round_idx * ttime_         # for epsilon continuity
+
+        for worker_i in range(workers):
+            # Each worker gets a fresh random request sequence
+            ids = {i: [] for i in range(ttime_)}
+            if FixedRequests is not None:
+                ids = FixedRequests
+            else:
+                for i in range(ttime_):
+                    if i < rtime:
+                        for _ in range(numOfRequestPerRound):
+                            a = sample(range(numOfNode), 2)
+                            ids[i].append((a[0], a[1]))
+
+            for algoIndex, base_algo in enumerate(algorithms):
+                algo = copy.deepcopy(base_algo)
+                # Store slot_offset so prepare() initialises epsilon correctly
+                algo.slot_offset = slot_offset
+
+                requests = {i: [] for i in range(ttime_)}
+                for i in range(rtime):
+                    for (src, dst) in ids[i]:
+                        requests[i].append(
+                            (algo.topo.nodes[src], algo.topo.nodes[dst]))
+
+                pid += 1
+                # Temp snapshot path for this specific worker
+                w_path = f'{algo.name}_w{worker_i}_r{round_idx}.keras'
+                worker_model_paths[algoIndex].append(w_path)
+
+                job = multiprocessing.Process(
+                    target=runThread,
+                    args=(algo, requests, algoIndex, ttime_, pid,
+                          resultDicts[algoIndex], shared_data, w_path))
+                round_jobs.append(job)
+
+        # Start all workers in this round simultaneously
+        for job in round_jobs:
             job.start()
-        for job in trial_jobs:
-            job.join()   # ← wait for THIS trial before starting the next one
-        print(f'[Run] trial {trial_idx + 1}/{times} — done')
+        for job in round_jobs:
+            job.join()   # wait for the full round to finish
+
+        # FedAvg: average each algorithm's worker weights → update shared model
+        for algoIndex, base_algo in enumerate(algorithms):
+            if not hasattr(base_algo, 'entAgent'):
+                continue   # non-DQN algorithm — no model to average
+            shared = _agent_model_path(
+                base_algo.name,
+                len(base_algo.topo.nodes),
+                base_algo.topo.alpha,
+                base_algo.topo.q)
+            fedavg_models(worker_model_paths[algoIndex], shared)
+
+        print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
     for algoIndex in range(len(algorithms)):
         results[algoIndex] = AlgorithmResult.Avg(

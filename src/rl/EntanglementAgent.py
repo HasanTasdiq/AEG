@@ -79,8 +79,15 @@ class EntanglementAgent:
     This is the primary agent used in AEG_LS and AEG_PES.
     """
 
-    def __init__(self, algo, pid=0):
-        print(f'[EntanglementAgent] initialising for algorithm: {algo.name}')
+    def __init__(self, algo, pid=0, global_slot_offset=0):
+        """
+        global_slot_offset: the number of time slots already trained before
+        this worker starts (= round_idx × ttime in FedAvg mode).  Used to
+        initialise epsilon at the correct point in the decay schedule so
+        exploration does not restart from EPSILON_START every round.
+        """
+        print(f'[EntanglementAgent] init  algo={algo.name}  '
+              f'global_slot_offset={global_slot_offset}')
         self.env = RoutingEnv(algo)
         N = self.env.SIZE
 
@@ -98,9 +105,14 @@ class EntanglementAgent:
 
         self.replay_memory       = deque(maxlen=REPLAY_MEMORY_SIZE)
         self.target_update_counter = 0
-        self.last_action_table   = {}   # link → [(action, timeSlot, state, next_state)]
-        self.link_qs             = {}   # link → (state, q_values)
-        self.epsilon             = EPSILON_START
+        self.last_action_table   = {}
+        self.link_qs             = {}
+
+        # Initialise epsilon at the correct global position in the decay schedule.
+        # Without this, every FedAvg round would restart at EPSILON_START=0.5
+        # (pure exploration) even after the model has already converged.
+        elapsed      = max(0, global_slot_offset - START_EPSILON_DECAYING)
+        self.epsilon = max(EPSILON_MIN, EPSILON_START - EPSILON_DECAY_VALUE * elapsed)
 
     # ── Model construction ────────────────────────────────────────────────────
 
@@ -239,8 +251,22 @@ class EntanglementAgent:
             self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
         print(f'[EntanglementAgent] update_reward done in {time.time()-t0:.2f}s')
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Persistence & FedAvg support ─────────────────────────────────────────
 
     def save_model(self):
+        """Save to the shared model file (loaded at start of next trial/round)."""
         self.model.save(self.model_name)
         print(f'[EntanglementAgent] model saved: {self.model_name}')
+
+    def save_model_to(self, path):
+        """Save to an arbitrary path (used by FedAvg to collect worker snapshots)."""
+        self.model.save(path)
+
+    def get_weights(self):
+        """Return a copy of the current model weights (for FedAvg averaging)."""
+        return [w.copy() for w in self.model.get_weights()]
+
+    def set_weights(self, weights):
+        """Replace model weights in-place (for FedAvg after averaging)."""
+        self.model.set_weights(weights)
+        self.target_model.set_weights(weights)   # sync target network too
