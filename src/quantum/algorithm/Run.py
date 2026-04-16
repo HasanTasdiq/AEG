@@ -132,7 +132,7 @@ def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data):
 # ── Single-parameter simulation run ──────────────────────────────────────────
 def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         SocialNetworkDensity=0.5, rtime=ttime, topo=None,
-        FixedRequests=None, results=[]):
+        FixedRequests=None, results=[], name_suffix=''):
 
     if topo is None:
         topo = Topo.generate(numOfNode, q, 5, alpha, 6)
@@ -141,18 +141,20 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     topo.setAlpha(alpha)
 
     # ── AEG-LS only — full DQN training ──────────────────────────────────────
+    # name_suffix makes each sweep value use a distinct .keras model file so
+    # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        AEG_LS(copy.deepcopy(topo), name='AEG_LS'),
+        AEG_LS(copy.deepcopy(topo), name=f'AEG_LS{name_suffix}'),
 
         # -- baselines (uncomment to compare) ---------------------------------
-        # ILP(copy.deepcopy(topo), name='ILP'),
-        # RandomLinkSelection(copy.deepcopy(topo), name='Random'),
-        # SP(copy.deepcopy(topo), name='SP'),
+        # ILP(copy.deepcopy(topo),              name=f'ILP{name_suffix}'),
+        # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
+        # SP(copy.deepcopy(topo),               name=f'SP{name_suffix}'),
 
         # -- AEG ablation variants (uncomment to compare) ---------------------
-        # AEG_EC(copy.deepcopy(topo),  param='ten', name='AEG_EC'),
-        # AEG_PES(copy.deepcopy(topo), param='ten', name='AEG_PES'),
+        # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
+        # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
     ]
 
     # r and density are ILP-specific; set only if ILP is in the list
@@ -171,9 +173,19 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                + str(algo.topo.alpha) + str(algo.topo.q) + 'max_success')
         shared_data[key] = 0
 
-    jobs = []
-    pid  = 0
-    for _ in range(times):
+    pid = 0
+    # ── Sequential trials ─────────────────────────────────────────────────────
+    # Each trial runs to COMPLETION before the next one starts.
+    # This is critical for DQN-based algorithms (AEG_LS / AEG_EC / AEG_PES):
+    #   - Trial N finishes → best model is saved to disk
+    #   - Trial N+1 starts → EntanglementAgent.prepare() loads that saved model
+    #   - Training accumulates across all `times` trials
+    #
+    # With the old parallel design all trials started simultaneously, so every
+    # trial loaded an uninitialised model and 9 out of 10 training runs were
+    # discarded.  Sequential execution turns `times` into genuine training
+    # epochs: 10 trials × 200 slots × ~150 edges = 300,000 transitions.
+    for trial_idx in range(times):
         ids = {i: [] for i in range(ttime_)}
         if FixedRequests is not None:
             ids = FixedRequests
@@ -184,6 +196,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                         a = sample(range(numOfNode), 2)
                         ids[i].append((a[0], a[1]))
 
+        # Algorithms within one trial can still run in parallel (each has its
+        # own model file keyed on algo.name + topo params).
+        trial_jobs = []
         for algoIndex, base_algo in enumerate(algorithms):
             algo     = copy.deepcopy(base_algo)
             requests = {i: [] for i in range(ttime_)}
@@ -196,12 +211,14 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 target=runThread,
                 args=(algo, requests, algoIndex, ttime_, pid,
                       resultDicts[algoIndex], shared_data))
-            jobs.append(job)
+            trial_jobs.append(job)
 
-    for job in jobs:
-        job.start()
-    for job in jobs:
-        job.join()
+        print(f'\n[Run] trial {trial_idx + 1}/{times} — starting')
+        for job in trial_jobs:
+            job.start()
+        for job in trial_jobs:
+            job.join()   # ← wait for THIS trial before starting the next one
+        print(f'[Run] trial {trial_idx + 1}/{times} — done')
 
     for algoIndex in range(len(algorithms)):
         results[algoIndex] = AlgorithmResult.Avg(
@@ -212,33 +229,46 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
 
 
 # ── Per-sweep thread targets ──────────────────────────────────────────────────
+# Each target appends a sweep-specific suffix to the algorithm name so that
+# DQN models trained for different parameter values are stored in separate
+# .keras files and do not overwrite each other.
+
 def mainThreadReqPerTime(Xparam, topo, result):
-    result.extend(Run(numOfRequestPerRound=Xparam, topo=copy.deepcopy(topo)))
+    result.extend(Run(numOfRequestPerRound=Xparam,
+                      topo=copy.deepcopy(topo),
+                      name_suffix=f'_req{Xparam}'))
 
 def mainThreadNumOfNode(Xparam, result):
-    result.extend(Run(numOfNode=Xparam))
+    result.extend(Run(numOfNode=Xparam,
+                      name_suffix=f'_n{Xparam}'))
 
 def mainThreadSwapProb(Xparam, topo, result):
-    result.extend(Run(q=Xparam, topo=copy.deepcopy(topo)))
+    result.extend(Run(q=Xparam, topo=copy.deepcopy(topo),
+                      name_suffix=f'_q{Xparam}'))
 
 def mainThreadAlpha(Xparam, topo, result):
-    result.extend(Run(alpha=Xparam, topo=copy.deepcopy(topo)))
+    result.extend(Run(alpha=Xparam, topo=copy.deepcopy(topo),
+                      name_suffix=f'_a{Xparam}'))
 
 def mainThreadSwapFrac(Xparam, topo, result):
     topo.preSwapFraction = Xparam
-    result.extend(Run(topo=copy.deepcopy(topo)))
+    result.extend(Run(topo=copy.deepcopy(topo),
+                      name_suffix=f'_sf{Xparam}'))
 
 def mainThreadEntanglementLifetime(Xparam, topo, result):
     topo.entanglementLifetime = Xparam
-    result.extend(Run(topo=copy.deepcopy(topo)))
+    result.extend(Run(topo=copy.deepcopy(topo),
+                      name_suffix=f'_lt{Xparam}'))
 
 def mainThreadRequestTimeout(Xparam, topo, result):
     topo.requestTimeout = Xparam
-    result.extend(Run(topo=copy.deepcopy(topo)))
+    result.extend(Run(topo=copy.deepcopy(topo),
+                      name_suffix=f'_rt{Xparam}'))
 
 def mainThreadPreSwapCapacity(Xparam, topo, result):
     topo.preswap_capacity = Xparam
-    result.extend(Run(topo=copy.deepcopy(topo)))
+    result.extend(Run(topo=copy.deepcopy(topo),
+                      name_suffix=f'_pc{Xparam}'))
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
