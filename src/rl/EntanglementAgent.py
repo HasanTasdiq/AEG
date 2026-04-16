@@ -8,8 +8,8 @@ State space (per edge): (N×3 + 2) × N matrix, where N = number of nodes.
     Row 3N             : One-hot target edge indicator (source / destination nodes = 1)
     Row 3N+1           : Remaining qubit capacity at each node
 
-This full state (including distances) is the primary agent described in the paper (Fig. 2).
-Epsilon decays from 0.5 → 0 over 250 time slots.
+Full state (including distances) is the primary agent described in the paper (Fig. 2).
+Epsilon decays from 0.5 → 0.05 over 500 time slots, then stays at EPSILON_MIN.
 
 Rewards (defined in RoutingEnv.find_reward_ent):
     +25  if the entangled link was used in a successful end-to-end connection
@@ -34,35 +34,32 @@ except ImportError:
 from RoutingEnv import RoutingEnv
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
-# Tuned for ttime=200, times=10 (2000 time slots per sweep value).
-# The model is saved/loaded across runs so learning accumulates.
+# Tuned for FedAvg training: rounds=5, workers=3, ttime=200
+# = 3,000 slots × ~150 edges = 450,000 transitions (exceeds paper's 200k).
 #
-# Paper values: β=0.1 (learning rate, handled by Adam), γ=0.95 (discount),
-#               200,000 total time slots.
+# Paper values: γ=0.95 (discount), β=0.1 (learning rate, handled by Adam).
 
-DISCOUNT               = 0.95  # γ — paper value ✓
+DISCOUNT               = 0.95
 
-# Replay buffer: keep enough history for varied sampling.
-# With ~150 edges × 200 slots = 30,000 transitions per trial; 10k cap avoids
-# over-weighting stale transitions from early random exploration.
+# Replay buffer: 10k cap avoids over-weighting stale early transitions.
 REPLAY_MEMORY_SIZE     = 10_000
 
-# Start training quickly: with 150 edges/slot we hit 200 after 1–2 time slots,
-# so the DQN begins learning almost immediately rather than waiting.
+# With ~150 edges/slot, 200 transitions are accumulated after ~2 time slots,
+# so training begins almost immediately rather than waiting for hundreds of slots.
 MIN_REPLAY_MEMORY_SIZE = 200
 
-MINIBATCH_SIZE         = 64    # smaller batch → more frequent weight updates early on
+MINIBATCH_SIZE         = 64      # smaller batch → more frequent weight updates early
 
-# Sync the target network less often for more stable Bellman targets.
+# Sync target network every 100 training steps for stable Bellman targets.
 UPDATE_TARGET_EVERY    = 100
 
 # Exploration schedule:
-#   Explore for ~25% of the recommended 2000-slot run (first 500 slots ≈ 2–3 trials).
-#   After that, exploit with 5% residual exploration so the policy never fully freezes.
+#   Explore (ε=0.5→0.05) for first 500 global time slots (~25% of 2000-slot run).
+#   Then exploit with 5% residual exploration — policy never fully freezes.
 EPSILON_START          = 0.5
-EPSILON_MIN            = 0.05  # never drop below 5% random actions
+EPSILON_MIN            = 0.05   # floor — always keep some exploration
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 500   # full state (incl. distances) — decays slower
+END_EPSILON_DECAYING   = 500
 EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 random.seed(1)
@@ -76,22 +73,26 @@ class EntanglementAgent:
     """
     DQN agent that decides which physical links to entangle each time slot.
     Uses the full state representation (topology + requests + distances + qubit counts).
-    This is the primary agent used in AEG_LS and AEG_PES.
+    Primary agent for AEG_LS, AEG_EC, and AEG_PES.
     """
 
     def __init__(self, algo, pid=0, global_slot_offset=0):
         """
-        global_slot_offset: the number of time slots already trained before
-        this worker starts (= round_idx × ttime in FedAvg mode).  Used to
-        initialise epsilon at the correct point in the decay schedule so
-        exploration does not restart from EPSILON_START every round.
+        Args:
+            algo:               the routing algorithm instance (provides topo & state)
+            pid:                process id (unused internally, kept for API compat)
+            global_slot_offset: total slots already trained before this worker starts
+                                (= round_idx × ttime in FedAvg mode).
+                                Used to initialise epsilon at the correct point in the
+                                decay schedule so exploration does not restart from
+                                EPSILON_START=0.5 at the beginning of every round.
         """
         print(f'[EntanglementAgent] init  algo={algo.name}  '
               f'global_slot_offset={global_slot_offset}')
         self.env = RoutingEnv(algo)
         N = self.env.SIZE
 
-        # State: (N adjacency rows) + (N request rows) + (N distance rows) + 2 extra rows
+        # State shape: (N adjacency + N requests + N distances + 2 extra) × N
         self.OBSERVATION_SPACE_VALUES = (N * 3 + 2, N)
 
         self.model_name = (
@@ -103,16 +104,16 @@ class EntanglementAgent:
         self.target_model = self._create_model()
         self.target_model.set_weights(self.model.get_weights())
 
-        self.replay_memory       = deque(maxlen=REPLAY_MEMORY_SIZE)
+        self.replay_memory         = deque(maxlen=REPLAY_MEMORY_SIZE)
         self.target_update_counter = 0
-        self.last_action_table   = {}
-        self.link_qs             = {}
+        self.last_action_table     = {}   # link → [(action, time_slot, state, next_state)]
+        self.link_qs               = {}   # link → (state, q_values)
 
-        # Initialise epsilon at the correct global position in the decay schedule.
-        # Without this, every FedAvg round would restart at EPSILON_START=0.5
-        # (pure exploration) even after the model has already converged.
+        # Compute starting epsilon from the global training position.
+        # Without this, every FedAvg round would restart at 0.5 (pure exploration).
         elapsed      = max(0, global_slot_offset - START_EPSILON_DECAYING)
         self.epsilon = max(EPSILON_MIN, EPSILON_START - EPSILON_DECAY_VALUE * elapsed)
+        print(f'[EntanglementAgent] starting epsilon = {self.epsilon:.4f}')
 
     # ── Model construction ────────────────────────────────────────────────────
 
@@ -122,14 +123,14 @@ class EntanglementAgent:
             print(f'[EntanglementAgent] loaded saved model: {self.model_name}')
             return model
         except Exception:
-            print('[EntanglementAgent] no saved model found — building new model')
+            print('[EntanglementAgent] no saved model — building fresh')
 
         model = Sequential([
             Flatten(input_shape=self.OBSERVATION_SPACE_VALUES),
             Dense(72, activation='relu'),
             Dense(48, activation='relu'),
             Dense(24, activation='relu'),
-            Dense(7,  activation='linear'),   # Q-values for action indices
+            Dense(7,  activation='linear'),  # Q-values; 7 = max parallel links per edge
         ])
         model.compile(loss='mse', optimizer=Adam(), metrics=['accuracy'])
         return model
@@ -145,16 +146,16 @@ class EntanglementAgent:
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:
             return
 
-        minibatch       = random.sample(self.replay_memory, MINIBATCH_SIZE)
-        current_states  = np.array([t[0] for t in minibatch])
-        new_states      = np.array([t[3] for t in minibatch])
+        minibatch      = random.sample(self.replay_memory, MINIBATCH_SIZE)
+        current_states = np.array([t[0] for t in minibatch])
+        new_states     = np.array([t[3] for t in minibatch])
 
         current_qs_list = self.model.predict(current_states, verbose=0, batch_size=64)
         future_qs_list  = self.target_model.predict(new_states, verbose=0, batch_size=64)
 
         X, y = [], []
         for idx, (state, action, reward, _, done) in enumerate(minibatch):
-            new_q = reward if done else reward + DISCOUNT * np.max(future_qs_list[idx])
+            new_q      = reward if done else reward + DISCOUNT * np.max(future_qs_list[idx])
             qs         = current_qs_list[idx].copy()
             qs[action] = new_q
             X.append(state)
@@ -163,7 +164,7 @@ class EntanglementAgent:
         t0 = time.time()
         self.model.fit(np.array(X), np.array(y),
                        batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
-        print(f'[EntanglementAgent] training step done in {time.time()-t0:.2f}s')
+        print(f'[EntanglementAgent] train step {time.time()-t0:.2f}s')
 
         if terminal_state:
             self.target_update_counter += 1
@@ -182,18 +183,27 @@ class EntanglementAgent:
         for i, (link, state) in enumerate(states):
             self.link_qs[link] = (state, qs_all[i])
 
-    # ── Main learning loop (called once per time slot in p2) ─────────────────
+    # ── Main learning loop (called once per time slot from p2) ───────────────
 
     def learn_and_predict(self):
-        """Assign qubits to links greedily until no more assignments are possible."""
+        """Keep assigning qubits to links until no more can be assigned this slot."""
         while self._learn_and_predict_step():
             pass
 
     def _learn_and_predict_step(self):
-        """One pass: predict Q-values, sort edges, assign qubits. Returns True if any assigned."""
-        t0         = time.time()
-        edges      = self.env.algo.topo.edges
-        time_slot  = self.env.algo.timeSlot
+        """
+        One pass over all edges:
+          1. Predict Q-values for every edge in the current state
+          2. Choose action (exploit or explore) per edge
+          3. Sort by Q-value — assign highest-value edges first (greedy)
+          4. Execute assignments (assignQubitEdge) and record transitions
+          5. Decay epsilon once per step
+
+        Returns True if at least one qubit was successfully assigned.
+        """
+        t0        = time.time()
+        edges     = self.env.algo.topo.edges
+        time_slot = self.env.algo.timeSlot
         assignable = False
 
         self._get_link_qs_batch(edges, time_slot)
@@ -201,12 +211,12 @@ class EntanglementAgent:
         link_action_q = []
         for link, (state, qs) in self.link_qs.items():
             if np.random.random() > self.epsilon:
-                action = int(np.argmax(qs))
+                action = int(np.argmax(qs))   # exploit
             else:
-                action = np.random.randint(0, 2)
+                action = np.random.randint(0, 2)  # explore
             link_action_q.append((link, action, qs[action], state))
 
-        # Prioritise edges with highest predicted Q-value
+        # Prioritise edges with the highest predicted Q-value
         link_action_q.sort(key=lambda x: x[2], reverse=True)
 
         for link, action, q, state in link_action_q:
@@ -214,21 +224,30 @@ class EntanglementAgent:
             next_state = next_state if next_state is not None else state
             if did_assign:
                 assignable = True
-            entry = (action, time_slot, state, next_state)
-            self.last_action_table.setdefault(link, []).append(entry)
+            self.last_action_table.setdefault(link, []).append(
+                (action, time_slot, state, next_state))
 
-        # Decay epsilon once per time slot (after all links have been acted on)
+        # Decay epsilon once per time slot (after all link decisions are made)
         if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
             self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
 
         self.link_qs = {}
-        print(f'[EntanglementAgent] learn_and_predict step done in {time.time()-t0:.2f}s')
+        print(f'[EntanglementAgent] learn_and_predict step {time.time()-t0:.2f}s  '
+              f'ε={self.epsilon:.4f}')
         return assignable
 
-    # ── Reward update (called once per time slot in p4) ──────────────────────
+    # ── Reward update (called once per time slot from p4) ────────────────────
 
     def update_reward(self):
-        """Look up rewards from topo.reward_ent, push to replay, run a training step."""
+        """
+        After p4 has run BSM swapping and recorded rewards in topo.reward_ent:
+          1. Look up reward for each (link, action) pair taken this slot
+          2. Push (state, action, reward, next_state) into replay memory
+          3. Run one SGD training step on a random minibatch
+          4. Prune old entries from last_action_table (beyond entanglement lifetime)
+
+        Note: epsilon decay happens in _learn_and_predict_step, NOT here.
+        """
         t0 = time.time()
         print(f'[EntanglementAgent] update_reward — {len(self.last_action_table)} links')
 
@@ -236,37 +255,39 @@ class EntanglementAgent:
             for action, time_slot, state, next_state in history:
                 reward = self.env.find_reward_ent(link, time_slot, action)
                 if reward:
-                    self._update_replay_memory((state, action, reward, next_state, False))
+                    self._update_replay_memory(
+                        (state, action, reward, next_state, False))
 
         self.env.algo.topo.reward_ent = {}
         self._train(terminal_state=False)
 
-        # Prune entries older than entanglement lifetime
-        # (epsilon decay belongs in _learn_and_predict_step, not here)
+        # Prune transitions older than the entanglement lifetime so the table
+        # does not grow unboundedly across time slots.
         lifetime = 10
         for link in self.last_action_table:
             self.last_action_table[link] = [
                 e for e in self.last_action_table[link]
                 if self.env.algo.timeSlot - e[1] < lifetime
             ]
-        print(f'[EntanglementAgent] update_reward done in {time.time()-t0:.2f}s')
+
+        print(f'[EntanglementAgent] update_reward done {time.time()-t0:.2f}s')
 
     # ── Persistence & FedAvg support ─────────────────────────────────────────
 
     def save_model(self):
-        """Save to the shared model file (loaded at start of next trial/round)."""
+        """Save to the shared model file (loaded by the next trial/round)."""
         self.model.save(self.model_name)
         print(f'[EntanglementAgent] model saved: {self.model_name}')
 
     def save_model_to(self, path):
-        """Save to an arbitrary path (used by FedAvg to collect worker snapshots)."""
+        """Save to an arbitrary path (FedAvg worker snapshots)."""
         self.model.save(path)
 
     def get_weights(self):
-        """Return a copy of the current model weights (for FedAvg averaging)."""
+        """Return a copy of model weights for FedAvg averaging."""
         return [w.copy() for w in self.model.get_weights()]
 
     def set_weights(self, weights):
-        """Replace model weights in-place (for FedAvg after averaging)."""
+        """Apply averaged weights to both the prediction and target networks."""
         self.model.set_weights(weights)
-        self.target_model.set_weights(weights)   # sync target network too
+        self.target_model.set_weights(weights)  # keep target in sync
