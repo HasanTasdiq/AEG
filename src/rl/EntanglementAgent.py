@@ -227,9 +227,7 @@ class EntanglementAgent:
             self.last_action_table.setdefault(link, []).append(
                 (action, time_slot, state, next_state))
 
-        # Decay epsilon once per time slot (after all link decisions are made)
-        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
-            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
+
 
         self.link_qs = {}
         print(f'[EntanglementAgent] learn_and_predict step {time.time()-t0:.2f}s  '
@@ -269,7 +267,9 @@ class EntanglementAgent:
                 e for e in self.last_action_table[link]
                 if self.env.algo.timeSlot - e[1] < lifetime
             ]
-
+        # Decay epsilon once per time slot (after all link decisions are made)
+        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
+            self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
         print(f'[EntanglementAgent] update_reward done {time.time()-t0:.2f}s')
 
     # ── Persistence & FedAvg support ─────────────────────────────────────────

@@ -71,16 +71,16 @@ import os.path
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
 ttime   = 200     # time slots per worker trial
-ttime2  = 200     # cap for non-DQN algorithms (matches ttime when running AEG-LS only)
+ttime2  = 50     # cap for non-DQN algorithms (matches ttime when running AEG-LS only)
 step    = 50      # timeslot chart sample interval → points at 0, 50, 100, 150
-rounds  = 5       # sequential FedAvg rounds (model saved/averaged between rounds)
-workers = 3       # parallel workers per round (set to cpu_count() for max speed)
+rounds  = 2       # sequential FedAvg rounds (model saved/averaged between rounds)
+workers = 5       # parallel workers per round (set to cpu_count() for max speed)
 nodeNo  = 50      # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (P≈0.819 at 100 km)
 degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
-numOfRequestPerRound  = [25, 30, 35]                    # Fig. 5 / Fig. 6
+numOfRequestPerRound  = [25]                    # Fig. 5 / Fig. 6
 totalRequest          = [10, 20, 30, 40, 50]
 numOfNodes            = [50, 75, 100]
 r                     = [0, 2, 4, 6, 8, 10]
@@ -108,10 +108,11 @@ Xlabels = [
 
 # Run all four paper sweeps: Fig.5 (requests), Fig.5b (swap prob),
 # Fig.5c (alpha), Fig.4 (entanglement lifetime)
-runLabel = [0, 4, 5, 8]
+# runLabel = [0, 4, 5, 8]
+runLabel = [0]
 
 # No non-RL baselines in this run — no algorithms need a shortened window
-toRunLessAlgos = []
+toRunLessAlgos = ['ILP', 'Random', 'SP']
 
 
 # ── Per-trial worker ──────────────────────────────────────────────────────────
@@ -220,9 +221,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         AEG_LS(copy.deepcopy(topo), name=f'AEG_LS{name_suffix}'),
 
         # -- baselines (uncomment to compare) ---------------------------------
-        # ILP(copy.deepcopy(topo),              name=f'ILP{name_suffix}'),
-        # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        # SP(copy.deepcopy(topo),               name=f'SP{name_suffix}'),
+        ILP(copy.deepcopy(topo),              name=f'ILP{name_suffix}'),
+        RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
+        SP(copy.deepcopy(topo),               name=f'SP{name_suffix}'),
 
         # -- AEG ablation variants (uncomment to compare) ---------------------
         # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
