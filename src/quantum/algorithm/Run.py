@@ -70,11 +70,11 @@ import os.path
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 200     # time slots per worker trial
+ttime   = 20     # time slots per worker trial
 ttime2  = 50     # cap for non-DQN algorithms (matches ttime when running AEG-LS only)
 step    = 50      # timeslot chart sample interval → points at 0, 50, 100, 150
 rounds  = 2       # sequential FedAvg rounds (model saved/averaged between rounds)
-workers = 5       # parallel workers per round (set to cpu_count() for max speed)
+workers = 4       # parallel workers per round (set to cpu_count() for max speed)
 nodeNo  = 50      # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (P≈0.819 at 100 km)
 degree  = 6
@@ -123,9 +123,6 @@ def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data,
     here regardless of performance so the main process can average weights.
     """
     timeSlot = ttime
-    global ttime2
-    if algo.name in toRunLessAlgos:
-        timeSlot = min(ttime2, ttime)
 
     for i in range(timeSlot):
         result = algo.work(requests[i], i)

@@ -100,7 +100,7 @@ class EntanglementAgentV2:
             Dense(72, activation='relu'),
             Dense(48, activation='relu'),
             Dense(24, activation='relu'),
-            Dense(7,  activation='linear'),
+            Dense(8,  activation='linear'),  # Q-values; 8 = l+1 where l_max=7 (paper §III-A)
         ])
         model.compile(loss='mse', optimizer=Adam(), metrics=['accuracy'])
         return model
@@ -132,8 +132,7 @@ class EntanglementAgentV2:
                        batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
         print(f'[EntanglementAgentV2] training step done in {time.time()-t0:.2f}s')
 
-        if terminal_state:
-            self.target_update_counter += 1
+        self.target_update_counter += 1
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
@@ -164,7 +163,7 @@ class EntanglementAgentV2:
             if np.random.random() > self.epsilon:
                 action = int(np.argmax(qs))
             else:
-                action = np.random.randint(0, 2)
+                action = np.random.randint(0, 8)  # explore full action space (0..l_max)
             link_action_q.append((link, action, qs[action], state))
 
         link_action_q.sort(key=lambda x: x[2], reverse=True)

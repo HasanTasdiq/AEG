@@ -128,7 +128,7 @@ class RoutingEnv(Env):
         state1[source.id] = 1
         state1[dest.id] = 1
 
-        graph_state = [[0]*self.SIZE]*self.SIZE
+        graph_state = [[0]*self.SIZE for _ in range(self.SIZE)]
 
         for link in self.algo.topo.links:
             if link.assignable():
@@ -141,7 +141,7 @@ class RoutingEnv(Env):
         # print(state1)
         # print(pair)
 
-        req_state = [[0]*self.SIZE]*self.SIZE
+        req_state = [[0]*self.SIZE for _ in range(self.SIZE)]
 
 
         if  hasattr(self.algo , 'requestState' ):
@@ -168,7 +168,7 @@ class RoutingEnv(Env):
             graph_state.extend(req_state)
         
 
-        dist_state = [[0]*self.SIZE]*self.SIZE
+        dist_state = [[0]*self.SIZE for _ in range(self.SIZE)]
 
         for u in self.algo.topo.nodes:
             for v in self.algo.topo.nodes:
@@ -207,7 +207,7 @@ class RoutingEnv(Env):
         state1[source.id] = 1
         state1[dest.id] = 1
 
-        graph_state = [[0]*self.SIZE]*self.SIZE
+        graph_state = [[0]*self.SIZE for _ in range(self.SIZE)]
 
         for link in self.algo.topo.links:
             if link.isEntangled(timeSlot):
@@ -219,7 +219,7 @@ class RoutingEnv(Env):
         # print(pair)
         graph_state.append(state1)
 
-        req_state = [[0]*self.SIZE]*self.SIZE
+        req_state = [[0]*self.SIZE for _ in range(self.SIZE)]
         if  hasattr(self.algo , 'requestState' ):
             for req in self.algo.requestState:
                 n1 = req[0].id 

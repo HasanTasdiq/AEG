@@ -67,7 +67,7 @@ class AEG_EC(AlgorithmBase):
         print('diff ' , len(set(self.topo.links).difference(self.topo.usedLinks)))
 
         # self.topo.clearAllEntanglements()
-        self.topo.resetEntanglement()
+        self.topo.resetEntanglement(self.timeSlot)
         self.result.waitingTime = self.totalWaitingTime / self.totalRequest
         self.result.usedQubits = self.totalUsedQubits / self.totalRequest
         
@@ -115,10 +115,13 @@ class AEG_EC(AlgorithmBase):
         if len(self.srcDstPairs) > 0:
             self.EPS()
             self.ELS()
-        # print('[REPS-CACHE] p4 end') 
+        else:
+            # No pending requests — keep all three per-slot lists in sync
+            self.result.successfulRequestPerRound.append(0)
+            self.result.entanglementPerRound.append(0)
+        # print('[REPS-CACHE] p4 end')
         self.printResult()
         self.entAgent.update_reward()
-
         return self.result
 
     # ── LP1 / PFT removed — AEG_EC uses EntanglementAgent for link selection ──
@@ -428,6 +431,7 @@ class AEG_EC(AlgorithmBase):
         # print('[REPS-CACHE]' + [(src.id, dst.id) for (src, dst) in self.srcDstPairs])
         totalEntanglement = 0
         successReq = 0
+        usedLinks = set()   # per-slot set — mirrors AEG_LS / ILP / Random / SP
         for SDpair in self.srcDstPairs:
             src = SDpair[0]
             dst = SDpair[1]
@@ -442,6 +446,8 @@ class AEG_EC(AlgorithmBase):
                 # print('[REPS-CACHE] attempt:' , (src.id , dst.id), [node.id for node in path])
                 # print('[REPS-CACHE] (node, link1, link2) :', [(x[0].id , x[1].n1.id , x[1].n2.id , x[2].n1.id , x[2].n2.id) for x in needLink[(SDpair, pathIndex)]])
                 for (node, link1, link2) in needLink[(SDpair, pathIndex)]:
+                    usedLinks.add(link1)
+                    usedLinks.add(link2)
                     swapped = node.attemptSwapping(link1, link2)
                     if swapped:
                         self.topo.usedLinks.add(link1)
@@ -493,18 +499,19 @@ class AEG_EC(AlgorithmBase):
                         except:
                             self.topo.reward_ent[edge] = self.topo.negative_reward
                 totalEntanglement += len(successPath)
+        self.result.usedLinks                  += len(usedLinks)
         self.result.entanglementPerRound.append(totalEntanglement)
         self.result.successfulRequestPerRound.append(successReq)
 
         self.result.successfulRequest += successReq
-        
+
         entSum = sum(self.result.entanglementPerRound)
-        
+
         self.filterReqeuest()
         print(self.name , '######+++++++========= total ent: '  , 'till time:' , self.timeSlot, ':='  , entSum)
         print(self.name , '######+++++++========= total pathSelecttion: ' , 'till time:' , self.timeSlot , ':=' , self.pathSelecttion , '========+++++==========')
         print('[' , self.name, '] :' , self.timeSlot, ' current successful request:', successReq)
-            
+
     def filterReqeuest(self):
         self.requests = list(filter(lambda x: self.timeSlot -  x[2] < self.topo.requestTimeout -1 , self.requests))
 

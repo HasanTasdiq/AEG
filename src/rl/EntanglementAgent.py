@@ -9,7 +9,7 @@ State space (per edge): (N×3 + 2) × N matrix, where N = number of nodes.
     Row 3N+1           : Remaining qubit capacity at each node
 
 Full state (including distances) is the primary agent described in the paper (Fig. 2).
-Epsilon decays from 0.5 → 0.05 over 500 time slots, then stays at EPSILON_MIN.
+Epsilon decays from 1.0 → 0.05 over 50,000 time slots (~25% of paper's 200k horizon).
 
 Rewards (defined in RoutingEnv.find_reward_ent):
     +25  if the entangled link was used in a successful end-to-end connection
@@ -34,32 +34,35 @@ except ImportError:
 from RoutingEnv import RoutingEnv
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
-# Tuned for FedAvg training: rounds=5, workers=3, ttime=200
-# = 3,000 slots × ~150 edges = 450,000 transitions (exceeds paper's 200k).
-#
 # Paper values: γ=0.95 (discount), β=0.1 (learning rate, handled by Adam).
+#
+# Memory notes: each transition stores two states of shape (N*3+2, N).
+# For N=50: 152×50×4 bytes ≈ 30 KB per state → ~61 KB per transition.
+# REPLAY_MEMORY_SIZE=2000 → ~122 MB per agent, safe for multi-worker runs.
+# Reduce further (e.g. 1000) if memory pressure remains.
 
 DISCOUNT               = 0.95
 
-# Replay buffer: 10k cap avoids over-weighting stale early transitions.
-REPLAY_MEMORY_SIZE     = 10_000
+# Replay buffer: 50k cap — holds ~330 slots of history at ~150 transitions/slot.
+# Provides diverse experience for stable gradient estimates during full training.
+REPLAY_MEMORY_SIZE     = 50_000
 
-# With ~150 edges/slot, 200 transitions are accumulated after ~2 time slots,
-# so training begins almost immediately rather than waiting for hundreds of slots.
-MIN_REPLAY_MEMORY_SIZE = 200
+# Start training after 2000 transitions (~13 slots) — proper warm-up before SGD.
+MIN_REPLAY_MEMORY_SIZE = 2_000
 
-MINIBATCH_SIZE         = 64      # smaller batch → more frequent weight updates early
+MINIBATCH_SIZE         = 64
 
-# Sync target network every 100 training steps for stable Bellman targets.
-UPDATE_TARGET_EVERY    = 100
+# Sync target network every 50 steps.
+UPDATE_TARGET_EVERY    = 50
 
 # Exploration schedule:
-#   Explore (ε=0.5→0.05) for first 500 global time slots (~25% of 2000-slot run).
-#   Then exploit with 5% residual exploration — policy never fully freezes.
-EPSILON_START          = 0.5
+#   Full exploration (ε=1.0) decays to 0.05 over first 50,000 slots
+#   (~25% of paper's 200,000-slot training horizon).
+#   Residual 5% exploration prevents policy from fully freezing.
+EPSILON_START          = 1.0
 EPSILON_MIN            = 0.05   # floor — always keep some exploration
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 500
+END_EPSILON_DECAYING   = 50_000
 EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 random.seed(1)
@@ -130,7 +133,7 @@ class EntanglementAgent:
             Dense(72, activation='relu'),
             Dense(48, activation='relu'),
             Dense(24, activation='relu'),
-            Dense(7,  activation='linear'),  # Q-values; 7 = max parallel links per edge
+            Dense(8,  activation='linear'),  # Q-values; 8 = l+1 where l_max=7 (paper §III-A)
         ])
         model.compile(loss='mse', optimizer=Adam(), metrics=['accuracy'])
         return model
@@ -166,8 +169,7 @@ class EntanglementAgent:
                        batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
         print(f'[EntanglementAgent] train step {time.time()-t0:.2f}s')
 
-        if terminal_state:
-            self.target_update_counter += 1
+        self.target_update_counter += 1
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
@@ -186,26 +188,19 @@ class EntanglementAgent:
     # ── Main learning loop (called once per time slot from p2) ───────────────
 
     def learn_and_predict(self):
-        """Keep assigning qubits to links until no more can be assigned this slot."""
-        while self._learn_and_predict_step():
-            pass
-
-    def _learn_and_predict_step(self):
         """
-        One pass over all edges:
-          1. Predict Q-values for every edge in the current state
-          2. Choose action (exploit or explore) per edge
-          3. Sort by Q-value — assign highest-value edges first (greedy)
-          4. Execute assignments (assignQubitEdge) and record transitions
-          5. Decay epsilon once per step
+        Run the RL model ONCE per timeslot to score all edges, then assign
+        qubits greedily in Q-value priority order until no more assignments
+        can be made — without calling the model again.
 
-        Returns True if at least one qubit was successfully assigned.
+        This replaces the old multi-step loop that re-ran inference on every
+        pass, cutting p2 runtime from O(passes × edges) model calls to O(1).
         """
         t0        = time.time()
         edges     = self.env.algo.topo.edges
         time_slot = self.env.algo.timeSlot
-        assignable = False
 
+        # ── Single inference pass ─────────────────────────────────────────
         self._get_link_qs_batch(edges, time_slot)
 
         link_action_q = []
@@ -213,26 +208,28 @@ class EntanglementAgent:
             if np.random.random() > self.epsilon:
                 action = int(np.argmax(qs))   # exploit
             else:
-                action = np.random.randint(0, 2)  # explore
+                action = np.random.randint(0, 8)  # explore full action space (0..l_max)
             link_action_q.append((link, action, qs[action], state))
 
-        # Prioritise edges with the highest predicted Q-value
+        # Sort once: highest Q-value first — priority is fixed for this slot
         link_action_q.sort(key=lambda x: x[2], reverse=True)
-
-        for link, action, q, state in link_action_q:
-            next_state, did_assign = self.env.assignQubitEdge(link, action, time_slot)
-            next_state = next_state if next_state is not None else state
-            if did_assign:
-                assignable = True
-            self.last_action_table.setdefault(link, []).append(
-                (action, time_slot, state, next_state))
-
-
-
         self.link_qs = {}
-        print(f'[EntanglementAgent] learn_and_predict step {time.time()-t0:.2f}s  '
-              f'ε={self.epsilon:.4f}')
-        return assignable
+        print(f'[EntanglementAgent] inference {time.time()-t0:.3f}s  ε={self.epsilon:.4f}')
+
+        # ── Greedy assignment loop (no further model calls) ───────────────
+        # Re-visit edges in the same Q-value order each pass; stop when a
+        # full pass produces no new assignment (capacity exhausted).
+        while True:
+            assigned_this_pass = False
+            for link, action, q, state in link_action_q:
+                next_state, did_assign = self.env.assignQubitEdge(link, action, time_slot)
+                if did_assign:
+                    next_state = next_state if next_state is not None else state
+                    assigned_this_pass = True
+                    self.last_action_table.setdefault(link, []).append(
+                        (action, time_slot, state, next_state))
+            if not assigned_this_pass:
+                break
 
     # ── Reward update (called once per time slot from p4) ────────────────────
 
@@ -261,14 +258,15 @@ class EntanglementAgent:
 
         # Prune transitions older than the entanglement lifetime so the table
         # does not grow unboundedly across time slots.
+        current_slot = self.env.algo.timeSlot
         lifetime = 10
         for link in self.last_action_table:
             self.last_action_table[link] = [
                 e for e in self.last_action_table[link]
-                if self.env.algo.timeSlot - e[1] < lifetime
+                if current_slot - e[1] < lifetime
             ]
         # Decay epsilon once per time slot (after all link decisions are made)
-        if START_EPSILON_DECAYING <= time_slot <= END_EPSILON_DECAYING:
+        if START_EPSILON_DECAYING <= current_slot <= END_EPSILON_DECAYING:
             self.epsilon = max(EPSILON_MIN, self.epsilon - EPSILON_DECAY_VALUE)
         print(f'[EntanglementAgent] update_reward done {time.time()-t0:.2f}s')
 
