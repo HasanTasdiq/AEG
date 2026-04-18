@@ -75,11 +75,17 @@ class RandomLinkSelection(AlgorithmBase):
     # ── Link selection (random) ───────────────────────────────────────────────
 
     def _random_assign_links(self):
-        """Each assignable link is independently selected with 50% probability."""
-        for link in self.topo.links:
-            if link.assignable() and random.random() > 0.5:
-                link.assignQubits()
-                self.totalUsedQubits += 2
+        """Repeatedly assign qubits to randomly selected links until a full
+        pass makes no new assignments — mirrors AEG_LS's exhaustive loop."""
+        while True:
+            assigned_this_pass = False
+            for link in self.topo.links:
+                if link.assignable() and random.random() > 0.5:
+                    link.assignQubits()
+                    self.totalUsedQubits += 2
+                    assigned_this_pass = True
+            if not assigned_this_pass:
+                break
 
     # ── Phase 2: queue requests + random link selection ───────────────────────
 
