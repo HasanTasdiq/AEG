@@ -104,7 +104,11 @@ class AEG_LS(AlgorithmBase):
         if len(self.srcDstPairs) > 0:
             self.EPS()
             self.ELS()
-        # print('[REPS] p4 end') 
+        else:
+            # No pending requests — keep all three per-slot lists in sync
+            self.result.successfulRequestPerRound.append(0)
+            self.result.entanglementPerRound.append(0)
+        # print('[REPS] p4 end')
         self.printResult()
         self.entAgent.update_reward()
         return self.result
@@ -337,13 +341,14 @@ class AEG_LS(AlgorithmBase):
                 prev = targetPath[nodeIndex - 1]
                 node = targetPath[nodeIndex]
                 next = targetPath[nodeIndex + 1]
+                targetLink1 = targetLink2 = None
                 for link in node.links:
                     if link.contains(next) and link.entangled and link.notSwapped():
                         targetLink1 = link
-                    
+
                     if link.contains(prev) and link.entangled and link.notSwapped():
                         targetLink2 = link
-                
+
                 self.y[((node, next))] += 1
                 self.y[((next, node))] += 1
                 self.y[((node, prev))] += 1
@@ -392,13 +397,14 @@ class AEG_LS(AlgorithmBase):
                 prev = targetPath[nodeIndex - 1]
                 node = targetPath[nodeIndex]
                 next = targetPath[nodeIndex + 1]
+                targetLink1 = targetLink2 = None
                 for link in node.links:
                     if link.contains(next) and link.entangled:
                         targetLink1 = link
-                    
+
                     if link.contains(prev) and link.entangled:
                         targetLink2 = link
-                
+
                 self.y[((node, next))] += 1
                 self.y[((next, node))] += 1
                 self.y[((node, prev))] += 1
@@ -406,7 +412,7 @@ class AEG_LS(AlgorithmBase):
                 nextLink[node].append(targetLink1)
                 needLink[(i, pathIndex)].append((node, targetLink1, targetLink2))
             T.remove(i)
-        
+
         # print('[REPS] ELS end')
         # print('[REPS]' + [(src.id, dst.id) for (src, dst) in self.srcDstPairs])
         totalEntanglement = 0
@@ -486,31 +492,6 @@ class AEG_LS(AlgorithmBase):
 
     # findPathsForPFT / DijkstraForPFT / widthForPFT removed (no LP1/PFT in AEG_LS)
 
-    def findPathsForEPS(self, SDpair, k):
-        src = SDpair[0]
-        dst = SDpair[1]
-        pathList = []
-
-        while self.DijkstraForPFT(SDpair):
-            path = []
-            currentNode = dst
-            while currentNode != self.topo.sentinel:
-                path.append(currentNode)
-                currentNode = self.parent[currentNode]
-
-            path = path[::-1]
-            width = self.widthForPFT(path, SDpair)
-            
-            for i in range(len(path) - 1):
-                node = path[i]
-                next = path[i + 1]
-                self.fi_LP[SDpair][(node, next)] -= width
-
-            path.append(width)
-            pathList.append(path.copy())
-
-        return pathList
-    
     def findPathsForEPS(self, SDpair, k):
         src = SDpair[0]
         dst = SDpair[1]

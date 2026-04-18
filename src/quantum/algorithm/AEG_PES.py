@@ -121,10 +121,13 @@ class AEG_PES(AlgorithmBase):
         if len(self.srcDstPairs) > 0:
             self.EPS()
             self.ELS()
-        # print('[REPS-CACHE] p4 end') 
+        else:
+            # No pending requests — keep all three per-slot lists in sync
+            self.result.successfulRequestPerRound.append(0)
+            self.result.entanglementPerRound.append(0)
+        # print('[REPS-CACHE] p4 end')
         self.printResult()
         self.entAgent.update_reward()
-
         return self.result
 
     
@@ -200,7 +203,7 @@ class AEG_PES(AlgorithmBase):
                 else:
                     prob +=link.p()
                 isVirtual = isVirtual or link.isVirtualLink
-            probability = prob/len(links)
+            probability = prob   # sum over links (not average); represents expected successful count
             # print('++===+++== later prob ' , self.timeSlot , probability)
 
             m.addConstr(gp.quicksum(f[i, u, v] + f[i, v, u] for i in range(numOfSDpairs)) <= probability * x[u, v])
@@ -313,7 +316,7 @@ class AEG_PES(AlgorithmBase):
                         next = Pi[SDpair][k][nodeIndex + 1]
                         self.fi[SDpair][(node, next)] += width
 
-            sorted(paths, key = self.widthForSort)
+            paths = sorted(paths, key=self.widthForSort)
             # print('[PFT]###===###+==== path len for ' , SDpair[0].id , SDpair[1].id , ':' , len(paths))
             # for path in paths:
             #     print('[PFT]============ ' ,[n for n in path])
@@ -686,6 +689,7 @@ class AEG_PES(AlgorithmBase):
         # print('[REPS-CACHE]' + [(src.id, dst.id) for (src, dst) in self.srcDstPairs])
         totalEntanglement = 0
         successReq = 0
+        usedLinks = set()   # per-slot set — mirrors AEG_LS / ILP / Random / SP
         for SDpair in self.srcDstPairs:
             src = SDpair[0]
             dst = SDpair[1]
@@ -700,7 +704,8 @@ class AEG_PES(AlgorithmBase):
                 # print('[REPS-CACHE] attempt:' , (src.id , dst.id), [node.id for node in path])
                 # print('[REPS-CACHE] (node, link1, link2) :', [(x[0].id , x[1].n1.id , x[1].n2.id , x[2].n1.id , x[2].n2.id) for x in needLink[(SDpair, pathIndex)]])
                 for (node, link1, link2) in needLink[(SDpair, pathIndex)]:
-                  
+                    usedLinks.add(link1)
+                    usedLinks.add(link2)
                     swapped = node.attemptSwapping(link1, link2)
                     # key = (node , link1.theOtherEndOf(node) , link2.theOtherEndOf(node))
                     # if not key in self.topo.needLinksDict:
@@ -782,12 +787,13 @@ class AEG_PES(AlgorithmBase):
                 totalEntanglement += len(successPath)
                 self.updateNeedLinksDict(path)
 
+        self.result.usedLinks                  += len(usedLinks)
         self.result.entanglementPerRound.append(totalEntanglement)
         self.result.successfulRequestPerRound.append(successReq)
 
         self.result.successfulRequest += successReq
         entSum = sum(self.result.entanglementPerRound)
-        
+
         print(self.name , '######+++++++========= total ent: ' , 'till time:' , self.timeSlot , ':=' , entSum)
         print(self.name , '######+++++++========= total pathSelecttion: ' , 'till time:' , self.timeSlot , ':=' , self.pathSelecttion , '========+++++==========')
         print('[' , self.name, '] :' , self.timeSlot, ' current successful request:', successReq)
