@@ -62,21 +62,28 @@ import os.path
 #            → average again → ...
 #
 # Total training = rounds × workers × ttime slots
-#   Default (rounds=5, workers=3, ttime=200): 3,000 slots × ~150 edges
-#   = 450,000 transitions  — 2× paper target, rounds × speedup vs sequential
+#   Full training (rounds=10, workers=8, ttime=2500): 200,000 slots — matches paper
+#   Doubling workers from 4→8 and halving rounds 20→10 keeps 200k total while
+#   cutting wall-clock time roughly in half (rounds are sequential; workers are parallel).
+#   Replay buffer (MIN=2000) fills after ~14 slots (2000/~150 edges); training starts fast.
+#   Epsilon decays from 1.0 → 0.05 over END_EPSILON_DECAYING=50,000 slots; with
+#   slot_offset = round_idx × ttime, exploration is nearly exhausted by round 9.
+#
+# Non-RL algorithms (ILP, Random, SP) use ttime2 slots — enough for stable statistics
+#   without paying the full Gurobi LP cost for 2500 slots per worker.
 #
 # Epsilon continuity: each worker is initialised at the correct point in the
 #   decay schedule via slot_offset = round_idx × ttime, so exploration decays
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 20     # time slots per worker trial
-ttime2  = 50     # cap for non-DQN algorithms (matches ttime when running AEG-LS only)
-step    = 50      # timeslot chart sample interval → points at 0, 50, 100, 150
-rounds  = 2       # sequential FedAvg rounds (model saved/averaged between rounds)
-workers = 4       # parallel workers per round (set to cpu_count() for max speed)
+ttime   = 2500   # RL algo slots per worker per round → 10 × 8 × 2500 = 200,000 total
+ttime2  = 500    # non-RL algo slots per worker (ILP/Random/SP — enough for stable stats)
+step    = 100    # timeslot chart sample interval → 25 points across 2500 slots
+rounds  = 2     # sequential FedAvg rounds → 10 × 8 × 2500 = 200,000 total slots
+workers = 15      # parallel workers per round (2× workers, ½ rounds → same total, faster)
 nodeNo  = 50      # nodes (paper: 50-node Waxman network)
-alpha_  = 0.0002  # default entanglement-generation alpha (P≈0.819 at 100 km)
+alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
@@ -116,34 +123,46 @@ toRunLessAlgos = ['ILP', 'Random', 'SP']
 
 
 # ── Per-trial worker ──────────────────────────────────────────────────────────
-def runThread(algo, requests, algoIndex, ttime, pid, resultDict, shared_data,
+def runThread(algo, requests, algoIndex, ttime, pid, result_queue, shared_data,
               worker_model_path=None):
     """
+    result_queue: per-algorithm Queue; worker puts its AlgorithmResult here.
     worker_model_path: if provided (FedAvg mode), always save the final model
     here regardless of performance so the main process can average weights.
     """
     timeSlot = ttime
+    result   = None
+    slot_i   = 0
 
-    for i in range(timeSlot):
-        result = algo.work(requests[i], i)
+    try:
+        for slot_i in range(timeSlot):
+            result = algo.work(requests[slot_i], slot_i)
+    except Exception as e:
+        import traceback
+        print(f'[runThread] pid={pid} algo={algo.name} crashed at slot {slot_i}: {e}',
+              flush=True)
+        traceback.print_exc()
 
-    resultDict[pid] = result
+    if result is not None:
+        result_queue.put(result)
+    else:
+        print(f'[runThread] pid={pid} algo={algo.name} produced no result — skipping',
+              flush=True)
+        return
 
-    success_req = sum(result.successfulRequestPerRound[i] for i in range(timeSlot))
-    max_key     = (algo.name + str(len(algo.topo.nodes))
-                   + str(algo.topo.alpha) + str(algo.topo.q) + 'max_success')
-
-    print(f'pid={pid}  algo={algo.name}  success={success_req}  '
-          f'best_so_far={shared_data[max_key] / timeSlot:.1f}')
+    success_req = sum(
+        result.successfulRequestPerRound[i]
+        for i in range(min(timeSlot, len(result.successfulRequestPerRound))))
+    print(f'pid={pid}  algo={algo.name}  success={success_req}', flush=True)
 
     if hasattr(algo, 'entAgent') and algo.entAgent is not None:
         # FedAvg: always save worker snapshot so main process can average
         if worker_model_path:
             algo.entAgent.save_model_to(worker_model_path)
-        # Also keep the global best for fallback / evaluation
-        if success_req > shared_data[max_key]:
+        # Keep global best as a fallback
+        if success_req > shared_data.get(algo.name + '_max', 0):
             algo.entAgent.save_model()
-            shared_data[max_key] = success_req
+            shared_data[algo.name + '_max'] = success_req
 
 
 # ── FedAvg weight averaging ───────────────────────────────────────────────────
@@ -215,14 +234,10 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        AEG_LS(copy.deepcopy(topo), name=f'AEG_LS{name_suffix}'),
-
-        # -- baselines (uncomment to compare) ---------------------------------
-        ILP(copy.deepcopy(topo),              name=f'ILP{name_suffix}'),
+        ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
         RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        SP(copy.deepcopy(topo),               name=f'SP{name_suffix}'),
-
-        # -- AEG ablation variants (uncomment to compare) ---------------------
+        SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
+        AEG_LS(copy.deepcopy(topo),              name=f'AEG_LS{name_suffix}'),
         # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
         # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
     ]
@@ -236,12 +251,11 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     results  = [[] for _ in range(len(algorithms))]
     ttime_   = rtime
 
-    resultDicts = [multiprocessing.Manager().dict() for _ in algorithms]
-    shared_data = multiprocessing.Manager().dict()
-    for algo in algorithms:
-        key = (algo.name + str(len(algo.topo.nodes))
-               + str(algo.topo.alpha) + str(algo.topo.q) + 'max_success')
-        shared_data[key] = 0
+    # Queue per algo: workers put() their AlgorithmResult; parent drains after join().
+    # Queues use OS pipes — reliable across nested spawned processes on macOS.
+    result_queues  = [multiprocessing.Queue() for _ in algorithms]
+    shared_manager = multiprocessing.Manager()
+    shared_data    = shared_manager.dict()
 
     pid = 0
     # ── FedAvg parallel training ──────────────────────────────────────────────
@@ -293,6 +307,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                         requests[i].append(
                             (algo.topo.nodes[src], algo.topo.nodes[dst]))
 
+                # Non-RL algorithms run for ttime2 slots, capped at ttime_ (requests dict size)
+                algo_ttime = ttime_ if hasattr(base_algo, 'entAgent') else min(ttime2, ttime_)
+
                 pid += 1
                 # Temp snapshot path for this specific worker
                 w_path = f'{algo.name}_w{worker_i}_r{round_idx}.keras'
@@ -300,8 +317,8 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
 
                 job = multiprocessing.Process(
                     target=runThread,
-                    args=(algo, requests, algoIndex, ttime_, pid,
-                          resultDicts[algoIndex], shared_data, w_path))
+                    args=(algo, requests, algoIndex, algo_ttime, pid,
+                          result_queues[algoIndex], shared_data, w_path))
                 round_jobs.append(job)
 
         # Start all workers in this round simultaneously
@@ -324,8 +341,17 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
     for algoIndex in range(len(algorithms)):
+        # Drain the queue — all workers have finished (job.join() above)
+        algo_results = []
+        q = result_queues[algoIndex]
+        while not q.empty():
+            algo_results.append(q.get_nowait())
+        if not algo_results:
+            print(f'[Run] WARNING: no results for {algorithms[algoIndex].name} '
+                  f'— all workers crashed or produced nothing', flush=True)
+            continue
         results[algoIndex] = AlgorithmResult.Avg(
-            resultDicts[algoIndex].values(),
+            algo_results,
             numOfRequestPerRound,
             algorithms[0].topo)
     return results
@@ -404,7 +430,8 @@ if __name__ == '__main__':
 
         Ydata   = []
         jobs    = []
-        results = {Xp: multiprocessing.Manager().list()
+        outer_manager = multiprocessing.Manager()
+        results = {Xp: outer_manager.list()
                    for Xp in Xparameters[XlabelIndex]}
 
         target_fn = {

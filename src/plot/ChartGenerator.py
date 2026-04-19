@@ -10,7 +10,7 @@ from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, HPacker, VPacker
 
 # ── Algorithm display names ───────────────────────────────────────────────────
 # Order must match the order algorithms are written to the data files by Run.py.
-ALGO_NAMES = ["AEG-LS", "ILP", "Random", "SP", "AEG-EC", "AEG-PES"]
+ALGO_NAMES = [ "ILP", "Random", "SP","AEG-LS" "AEG-EC", "AEG-PES"]
 
 
 class ChartGenerator:

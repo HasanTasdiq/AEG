@@ -617,7 +617,7 @@ class Topo:
         prevFromSrc = {}   # {cur: prev}
 
         q.append((D[src.id], src, self.sentinel))
-        sorted(q, key=lambda q: q[0])
+        q.sort(key=lambda x: x[0])
 
         # Dijkstra 
         while len(q) != 0:
@@ -645,7 +645,7 @@ class Topo:
                 if oldDist > newDist:
                     D[neighbor.id] = newDist
                     q.append((D[neighbor.id], neighbor, w))
-                    sorted(q, key=lambda q: q[0])
+                    q.sort(key=lambda x: x[0])
 
         return (sys.float_info.max, [])
 
@@ -681,7 +681,7 @@ class Topo:
         prevFromSrc = {}   # {cur: prev}
 
         q.append((D[src.id], src, self.sentinel))
-        sorted(q, key=lambda q: q[0])
+        q.sort(key=lambda x: x[0])
 
         # Dijkstra 
         while len(q) != 0:
@@ -709,7 +709,7 @@ class Topo:
                 if oldDist > newDist:
                     D[neighbor.id] = newDist
                     q.append((D[neighbor.id], neighbor, w))
-                    sorted(q, key=lambda q: q[0])
+                    q.sort(key=lambda x: x[0])
 
         return (sys.float_info.max, [])
         

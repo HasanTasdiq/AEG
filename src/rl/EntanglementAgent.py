@@ -123,10 +123,18 @@ class EntanglementAgent:
     def _create_model(self):
         try:
             model = load_model(self.model_name)
+            expected_in  = self.OBSERVATION_SPACE_VALUES
+            expected_out = 8
+            actual_in  = model.input_shape[1:]   # drop batch dim
+            actual_out = model.output_shape[-1]
+            if actual_in != expected_in or actual_out != expected_out:
+                raise ValueError(
+                    f'stale model: input {actual_in} (want {expected_in}), '
+                    f'output {actual_out} (want {expected_out})')
             print(f'[EntanglementAgent] loaded saved model: {self.model_name}')
             return model
-        except Exception:
-            print('[EntanglementAgent] no saved model — building fresh')
+        except Exception as e:
+            print(f'[EntanglementAgent] no saved model or shape mismatch ({e}) — building fresh')
 
         model = Sequential([
             Flatten(input_shape=self.OBSERVATION_SPACE_VALUES),
@@ -259,7 +267,7 @@ class EntanglementAgent:
         # Prune transitions older than the entanglement lifetime so the table
         # does not grow unboundedly across time slots.
         current_slot = self.env.algo.timeSlot
-        lifetime = 10
+        lifetime = self.env.algo.topo.entanglementLifetime
         for link in self.last_action_table:
             self.last_action_table[link] = [
                 e for e in self.last_action_table[link]
