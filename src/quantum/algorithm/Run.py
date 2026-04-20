@@ -81,8 +81,8 @@ ttime   = 2500   # RL algo slots per worker per round → 10 × 8 × 2500 = 200,
 ttime2  = 500    # non-RL algo slots per worker (ILP/Random/SP — enough for stable stats)
 step    = 100    # timeslot chart sample interval → 25 points across 2500 slots
 rounds  = 2     # sequential FedAvg rounds → 10 × 8 × 2500 = 200,000 total slots
-workers = 15      # parallel workers per round (2× workers, ½ rounds → same total, faster)
-nodeNo  = 50      # nodes (paper: 50-node Waxman network)
+workers = 8      # parallel workers per round (2× workers, ½ rounds → same total, faster)
+nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
 
@@ -234,9 +234,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
-        RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
+        # ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
+        # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
+        # SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
         AEG_LS(copy.deepcopy(topo),              name=f'AEG_LS{name_suffix}'),
         # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
         # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
@@ -258,6 +258,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     shared_data    = shared_manager.dict()
 
     pid = 0
+    all_collected = [[] for _ in algorithms]   # accumulates results across all rounds
     # ── FedAvg parallel training ──────────────────────────────────────────────
     # Structure:  rounds (sequential)  ×  workers (parallel within each round)
     #
@@ -324,8 +325,32 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         # Start all workers in this round simultaneously
         for job in round_jobs:
             job.start()
+
+        # Drain queues WHILE workers run — prevents deadlock where a worker
+        # blocks on queue.put() because the OS pipe buffer (~64 KB) is full
+        # while the parent is blocked on job.join() waiting for the same worker.
+        alive = list(round_jobs)
+        while alive:
+            for algoIndex in range(len(algorithms)):
+                try:
+                    while True:
+                        all_collected[algoIndex].append(
+                            result_queues[algoIndex].get_nowait())
+                except Exception:
+                    pass
+            alive = [j for j in alive if j.is_alive()]
+            if alive:
+                time.sleep(0.05)
+        # Final drain for any items delivered after last is_alive() check
+        for algoIndex in range(len(algorithms)):
+            try:
+                while True:
+                    all_collected[algoIndex].append(
+                        result_queues[algoIndex].get_nowait())
+            except Exception:
+                pass
         for job in round_jobs:
-            job.join()   # wait for the full round to finish
+            job.join()
 
         # FedAvg: average each algorithm's worker weights → update shared model
         for algoIndex, base_algo in enumerate(algorithms):
@@ -341,11 +366,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
     for algoIndex in range(len(algorithms)):
-        # Drain the queue — all workers have finished (job.join() above)
-        algo_results = []
-        q = result_queues[algoIndex]
-        while not q.empty():
-            algo_results.append(q.get_nowait())
+        algo_results = all_collected[algoIndex]
         if not algo_results:
             print(f'[Run] WARNING: no results for {algorithms[algoIndex].name} '
                   f'— all workers crashed or produced nothing', flush=True)
