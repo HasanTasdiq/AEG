@@ -65,9 +65,6 @@ START_EPSILON_DECAYING = 1
 END_EPSILON_DECAYING   = 50_000
 EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
-random.seed(1)
-np.random.seed(1)
-
 if not os.path.isdir('models'):
     os.makedirs('models')
 

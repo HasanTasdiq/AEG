@@ -77,11 +77,11 @@ import os.path
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 25   # RL algo slots per worker per round → 10 × 8 × 2500 = 200,000 total
+ttime   = 2500   # RL algo slots per worker per round → 3 × 32 × 2500 = 240,000 total
 ttime2  = 500    # non-RL algo slots per worker (ILP/Random/SP — enough for stable stats)
 step    = 100    # timeslot chart sample interval → 25 points across 2500 slots
-rounds  = 3     # sequential FedAvg rounds → 10 × 8 × 2500 = 200,000 total slots
-workers = 2      # parallel workers per round (2× workers, ½ rounds → same total, faster)
+rounds  = 3      # sequential FedAvg rounds
+workers = 32     # parallel workers per round; 64-core server, 2 TF threads each
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
@@ -124,12 +124,28 @@ toRunLessAlgos = ['ILP', 'Random', 'SP']
 
 # ── Per-trial worker ──────────────────────────────────────────────────────────
 def runThread(algo, requests, algoIndex, ttime, pid, result_queue, shared_data,
-              worker_model_path=None):
+              worker_model_path=None, seed: int = 0):
     """
     result_queue: per-algorithm Queue; worker puts its AlgorithmResult here.
     worker_model_path: if provided (FedAvg mode), always save the final model
     here regardless of performance so the main process can average weights.
+    seed: worker-specific random seed so each worker explores differently.
     """
+    import os
+    # Cap TF threads before TF is imported so each of the 32 workers gets
+    # 2 threads on the 64-core server without oversubscribing the CPU.
+    os.environ['OMP_NUM_THREADS']          = '2'
+    os.environ['TF_NUM_INTEROP_THREADS']   = '2'
+    os.environ['TF_NUM_INTRAOP_THREADS']   = '2'
+
+    # Per-worker seed — ensures distinct epsilon-greedy exploration across
+    # workers.  Must be set BEFORE algo.work() triggers EntanglementAgent
+    # import (which otherwise resets all workers to the same seed).
+    import random as _random
+    import numpy as _np
+    _random.seed(seed)
+    _np.random.seed(seed % (2 ** 31))
+
     timeSlot = ttime
     result   = None
     slot_i   = 0
@@ -327,10 +343,12 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 w_path = f'{algo.name}_w{worker_i}_r{round_idx}.keras'
                 worker_model_paths[algoIndex].append(w_path)
 
+                worker_seed = round_idx * workers + worker_i + 1
                 job = multiprocessing.Process(
                     target=runThread,
                     args=(algo, requests, algoIndex, algo_ttime, pid,
-                          result_queues[algoIndex], shared_data, w_path))
+                          result_queues[algoIndex], shared_data, w_path),
+                    kwargs={'seed': worker_seed})
                 round_jobs.append(job)
 
         # Start all workers in this round simultaneously
