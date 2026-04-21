@@ -77,11 +77,11 @@ import os.path
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 2500   # RL algo slots per worker per round → 10 × 8 × 2500 = 200,000 total
+ttime   = 25   # RL algo slots per worker per round → 10 × 8 × 2500 = 200,000 total
 ttime2  = 500    # non-RL algo slots per worker (ILP/Random/SP — enough for stable stats)
 step    = 100    # timeslot chart sample interval → 25 points across 2500 slots
-rounds  = 2     # sequential FedAvg rounds → 10 × 8 × 2500 = 200,000 total slots
-workers = 8      # parallel workers per round (2× workers, ½ rounds → same total, faster)
+rounds  = 3     # sequential FedAvg rounds → 10 × 8 × 2500 = 200,000 total slots
+workers = 2      # parallel workers per round (2× workers, ½ rounds → same total, faster)
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
@@ -218,6 +218,17 @@ def _agent_model_path(algo_name, n_nodes, alpha_val, q_val):
     return f'{algo_name}_{n_nodes}_{alpha_val}_{q_val}_EntanglementAgent.keras'
 
 
+def _fedavg_subprocess(worker_paths: list, shared_path: str) -> None:
+    """
+    Isolated entry point for FedAvg averaging.
+    Running this in a separate subprocess keeps TensorFlow out of the parent
+    process.  On Linux, multiprocessing uses fork by default: if the parent
+    imports TF (via a direct fedavg_models call) its thread-pool state is
+    inherited by all subsequent worker forks, causing round-2+ deadlocks.
+    """
+    fedavg_models(worker_paths, shared_path)
+
+
 # ── Single-parameter simulation run ──────────────────────────────────────────
 def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         SocialNetworkDensity=0.5, rtime=ttime, topo=None,
@@ -251,9 +262,6 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     results  = [[] for _ in range(len(algorithms))]
     ttime_   = rtime
 
-    # Queue per algo: workers put() their AlgorithmResult; parent drains after join().
-    # Queues use OS pipes — reliable across nested spawned processes on macOS.
-    result_queues  = [multiprocessing.Queue() for _ in algorithms]
     shared_manager = multiprocessing.Manager()
     shared_data    = shared_manager.dict()
 
@@ -281,6 +289,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
               f'({workers} parallel workers × {ttime_} slots)')
         print(f'{"="*60}')
 
+        # Fresh queues every round — prevents stale pipe FDs from accumulating
+        # across rounds when workers are forked on Linux.
+        result_queues       = [multiprocessing.Queue() for _ in algorithms]
         round_jobs          = []
         worker_model_paths  = [[] for _ in algorithms]   # per-algo worker snapshots
         slot_offset         = round_idx * ttime_         # for epsilon continuity
@@ -352,7 +363,10 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         for job in round_jobs:
             job.join()
 
-        # FedAvg: average each algorithm's worker weights → update shared model
+        # FedAvg: average each algorithm's worker weights → update shared model.
+        # Run in a subprocess so TensorFlow is never imported into the parent.
+        # On Linux (fork), a parent-side TF import corrupts the thread-pool state
+        # inherited by all subsequent worker forks, causing round-2+ deadlocks.
         for algoIndex, base_algo in enumerate(algorithms):
             if not hasattr(base_algo, 'entAgent'):
                 continue   # non-DQN algorithm — no model to average
@@ -361,7 +375,11 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 len(base_algo.topo.nodes),
                 base_algo.topo.alpha,
                 base_algo.topo.q)
-            fedavg_models(worker_model_paths[algoIndex], shared)
+            fp = multiprocessing.Process(
+                target=_fedavg_subprocess,
+                args=(worker_model_paths[algoIndex], shared))
+            fp.start()
+            fp.join()
 
         print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
