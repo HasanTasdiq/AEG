@@ -77,17 +77,17 @@ import os.path
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 2500   # RL algo slots per worker per round → 3 × 32 × 2500 = 240,000 total
-ttime2  = 500    # non-RL algo slots per worker (ILP/Random/SP — enough for stable stats)
-step    = 100    # timeslot chart sample interval → 25 points across 2500 slots
-rounds  = 3      # sequential FedAvg rounds
-workers = 32     # parallel workers per round; 64-core server, 2 TF threads each
+ttime   = 50     # slots per worker per run (evaluation)
+ttime2  = 50     # non-RL algo slots (ILP/SP)
+step    = 5      # timeslot chart sample interval → 10 points across 50 slots
+rounds  = 1      # single round — evaluation only, no FedAvg needed
+workers = 1      # one worker per request rate
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
-numOfRequestPerRound  = [25]                    # Fig. 5 / Fig. 6
+numOfRequestPerRound  = [25, 30, 35]            # Fig. 5 / Fig. 6
 totalRequest          = [10, 20, 30, 40, 50]
 numOfNodes            = [50, 75, 100]
 r                     = [0, 2, 4, 6, 8, 10]
@@ -261,9 +261,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        # ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
+        ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
         # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        # SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
+        SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
         AEG_LS(copy.deepcopy(topo),              name=f'AEG_LS{name_suffix}'),
         # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
         # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
@@ -310,7 +310,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         result_queues       = [multiprocessing.Queue() for _ in algorithms]
         round_jobs          = []
         worker_model_paths  = [[] for _ in algorithms]   # per-algo worker snapshots
-        slot_offset         = round_idx * ttime_         # for epsilon continuity
+        slot_offset         = 50_000                      # evaluation: start AEG_LS at ε=0.05
 
         for worker_i in range(workers):
             # Each worker gets a fresh random request sequence
@@ -328,6 +328,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 algo = copy.deepcopy(base_algo)
                 # Store slot_offset so prepare() initialises epsilon correctly
                 algo.slot_offset = slot_offset
+                algo.eval_mode   = True
 
                 requests = {i: [] for i in range(ttime_)}
                 for i in range(rtime):

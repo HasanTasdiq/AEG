@@ -53,7 +53,9 @@ class AEG_LS(AlgorithmBase):
         slot_offset is set by Run.py before the subprocess starts so that epsilon
         initialises at the correct point in the global decay schedule."""
         slot_offset = getattr(self, 'slot_offset', 0)
-        self.entAgent = EntanglementAgent(self, pid=0, global_slot_offset=slot_offset)
+        eval_mode   = getattr(self, 'eval_mode', False)
+        self.entAgent = EntanglementAgent(self, pid=0, global_slot_offset=slot_offset,
+                                          eval_mode=eval_mode)
 
     def genNameByComma(self, varName, parName):
         return (varName + str(parName)).replace(' ', '')

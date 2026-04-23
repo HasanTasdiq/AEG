@@ -76,7 +76,7 @@ class EntanglementAgent:
     Primary agent for AEG_LS, AEG_EC, and AEG_PES.
     """
 
-    def __init__(self, algo, pid=0, global_slot_offset=0):
+    def __init__(self, algo, pid=0, global_slot_offset=0, eval_mode: bool = False):
         """
         Args:
             algo:               the routing algorithm instance (provides topo & state)
@@ -104,6 +104,7 @@ class EntanglementAgent:
         self.target_model = self._create_model()
         self.target_model.set_weights(self.model.get_weights())
 
+        self.eval_mode             = eval_mode
         self.replay_memory         = deque(maxlen=REPLAY_MEMORY_SIZE)
         self.target_update_counter = 0
         self.last_action_table     = {}   # link → [(action, time_slot, state, next_state)]
@@ -248,6 +249,8 @@ class EntanglementAgent:
 
         Note: epsilon decay happens in _learn_and_predict_step, NOT here.
         """
+        if self.eval_mode:
+            return
         t0 = time.time()
         print(f'[EntanglementAgent] update_reward — {len(self.last_action_table)} links')
 
