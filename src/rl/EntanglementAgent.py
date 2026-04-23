@@ -62,7 +62,7 @@ UPDATE_TARGET_EVERY    = 50
 EPSILON_START          = 1.0
 EPSILON_MIN            = 0.05   # floor — always keep some exploration
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 50_000
+END_EPSILON_DECAYING   = 5_000
 EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 if not os.path.isdir('models'):
@@ -170,10 +170,12 @@ class EntanglementAgent:
             X.append(state)
             y.append(qs)
 
-        t0 = time.time()
-        self.model.fit(np.array(X), np.array(y),
-                       batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
-        print(f'[EntanglementAgent] train step {time.time()-t0:.2f}s')
+        t0  = time.time()
+        fit = self.model.fit(np.array(X), np.array(y),
+                             batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
+        loss = fit.history['loss'][0]
+        print(f'[EntanglementAgent] train step {time.time()-t0:.2f}s  '
+              f'loss={loss:.4f}  buf={len(self.replay_memory)}')
 
         self.target_update_counter += 1
         if self.target_update_counter > UPDATE_TARGET_EVERY:

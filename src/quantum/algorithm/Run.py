@@ -77,17 +77,17 @@ import os.path
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 50     # slots per worker per run (evaluation)
-ttime2  = 50     # non-RL algo slots (ILP/SP)
-step    = 5      # timeslot chart sample interval → 10 points across 50 slots
-rounds  = 1      # single round — evaluation only, no FedAvg needed
-workers = 1      # one worker per request rate
+ttime   = 500    # RL algo slots per worker per round → 20 × 30 × 500 = 300,000 total
+ttime2  = 500    # non-RL algo slots (ILP/SP)
+step    = 10     # timeslot chart sample interval → 50 points across 500 slots
+rounds  = 20     # FedAvg rounds — more syncs reduce client drift vs fewer long rounds
+workers = 30     # parallel workers per round; 64-core server, 2 TF threads each
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
-numOfRequestPerRound  = [25, 30, 35]            # Fig. 5 / Fig. 6
+numOfRequestPerRound  = [25]                    # Fig. 5 / Fig. 6
 totalRequest          = [10, 20, 30, 40, 50]
 numOfNodes            = [50, 75, 100]
 r                     = [0, 2, 4, 6, 8, 10]
@@ -172,13 +172,10 @@ def runThread(algo, requests, algoIndex, ttime, pid, result_queue, shared_data,
     print(f'pid={pid}  algo={algo.name}  success={success_req}', flush=True)
 
     if hasattr(algo, 'entAgent') and algo.entAgent is not None:
-        # FedAvg: always save worker snapshot so main process can average
         if worker_model_path:
             algo.entAgent.save_model_to(worker_model_path)
-        # Keep global best as a fallback
-        if success_req > shared_data.get(algo.name + '_max', 0):
-            algo.entAgent.save_model()
-            shared_data[algo.name + '_max'] = success_req
+        print(f'pid={pid}  algo={algo.name}  ε={algo.entAgent.epsilon:.4f}  '
+              f'buf={len(algo.entAgent.replay_memory)}', flush=True)
 
 
 # ── FedAvg weight averaging ───────────────────────────────────────────────────
@@ -215,7 +212,16 @@ def fedavg_models(worker_paths, shared_path):
         for layer in range(len(weight_lists[0]))
     ]
 
-    # Apply averaged weights to first valid model and save as shared model
+    drifts = [
+        float(sum(np.linalg.norm(wl[l] - avg_weights[l])
+                  for l in range(len(avg_weights))))
+        for wl in weight_lists
+    ]
+    for i, d in enumerate(drifts):
+        print(f'[FedAvg] worker {i}: weight drift = {d:.4f}')
+    print(f'[FedAvg] mean drift = {float(np.mean(drifts)):.4f}  '
+          f'max drift = {float(np.max(drifts)):.4f}')
+
     base = _load(valid_paths[0])
     base.set_weights(avg_weights)
     base.save(shared_path)
@@ -261,9 +267,9 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
+        # ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
         # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
+        # SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
         AEG_LS(copy.deepcopy(topo),              name=f'AEG_LS{name_suffix}'),
         # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
         # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
@@ -310,7 +316,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         result_queues       = [multiprocessing.Queue() for _ in algorithms]
         round_jobs          = []
         worker_model_paths  = [[] for _ in algorithms]   # per-algo worker snapshots
-        slot_offset         = 50_000                      # evaluation: start AEG_LS at ε=0.05
+        slot_offset         = round_idx * ttime_         # epsilon continuity across rounds
 
         for worker_i in range(workers):
             # Each worker gets a fresh random request sequence
@@ -328,7 +334,6 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 algo = copy.deepcopy(base_algo)
                 # Store slot_offset so prepare() initialises epsilon correctly
                 algo.slot_offset = slot_offset
-                algo.eval_mode   = True
 
                 requests = {i: [] for i in range(ttime_)}
                 for i in range(rtime):
