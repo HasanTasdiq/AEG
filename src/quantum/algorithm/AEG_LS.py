@@ -478,7 +478,13 @@ class AEG_LS(AlgorithmBase):
                 
                 totalEntanglement += len(successPath)
         self.result.usedLinks += len(usedLinks)
-        
+
+        for link in self.topo.links:
+            if link.entangled and not link.used:
+                edge = self.topo.linktoEdgeSorted(link)
+                if edge not in self.topo.reward_ent:
+                    self.topo.reward_ent[edge] = self.topo.negative_reward
+
         self.result.entanglementPerRound.append(totalEntanglement)
         self.result.successfulRequestPerRound.append(successReq)
 

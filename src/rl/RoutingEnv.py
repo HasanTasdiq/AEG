@@ -96,8 +96,6 @@ class RoutingEnv(Env):
 
         if edge in self.algo.topo.reward_ent:
             reward = self.algo.topo.reward_ent[edge]
-            if not action:
-                reward = -reward
         elif self.algo.timeSlot - timeSlot >= self.algo.topo.entanglementLifetime:
             reward = self.algo.topo.negative_reward
         return reward

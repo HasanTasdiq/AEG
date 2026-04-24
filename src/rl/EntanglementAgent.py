@@ -56,13 +56,13 @@ MINIBATCH_SIZE         = 64
 UPDATE_TARGET_EVERY    = 50
 
 # Exploration schedule:
-#   Full exploration (ε=1.0) decays to 0.05 over first 50,000 slots
-#   (~25% of paper's 200,000-slot training horizon).
-#   Residual 5% exploration prevents policy from fully freezing.
+#   ε decays 1.0 → 0.05 over the first 2,500 per-worker slots (rounds 0–4 of 20).
+#   With ttime=500 slots/round, floor is reached at round 5 → 25% explore / 75% exploit,
+#   matching the paper's recommended ratio (first 25% of the training horizon).
 EPSILON_START          = 1.0
 EPSILON_MIN            = 0.05   # floor — always keep some exploration
 START_EPSILON_DECAYING = 1
-END_EPSILON_DECAYING   = 5_000
+END_EPSILON_DECAYING   = 2_500
 EPSILON_DECAY_VALUE    = (EPSILON_START - EPSILON_MIN) / (END_EPSILON_DECAYING - START_EPSILON_DECAYING)
 
 if not os.path.isdir('models'):
@@ -259,9 +259,8 @@ class EntanglementAgent:
         for link, history in self.last_action_table.items():
             for action, time_slot, state, next_state in history:
                 reward = self.env.find_reward_ent(link, time_slot, action)
-                if reward:
-                    self._update_replay_memory(
-                        (state, action, reward, next_state, False))
+                self._update_replay_memory(
+                    (state, action, reward, next_state, False))
 
         self.env.algo.topo.reward_ent = {}
         self._train(terminal_state=False)

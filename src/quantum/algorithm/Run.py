@@ -317,6 +317,7 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
         round_jobs          = []
         worker_model_paths  = [[] for _ in algorithms]   # per-algo worker snapshots
         slot_offset         = round_idx * ttime_         # epsilon continuity across rounds
+        round_start_counts  = [len(all_collected[i]) for i in range(len(algorithms))]
 
         for worker_i in range(workers):
             # Each worker gets a fresh random request sequence
@@ -405,6 +406,24 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
             fp.start()
             fp.join()
 
+        # ── Per-round progress summary ────────────────────────────────────────
+        _eps_decay = 0.95 / (2_499)   # mirrors END_EPSILON_DECAYING=2500 in EntanglementAgent
+        _next_offset = (round_idx + 1) * ttime_
+        _next_eps = max(0.05, 1.0 - _eps_decay * max(0, _next_offset - 1))
+        _phase = 'exploit' if _next_eps <= 0.05 else 'explore'
+        print(f'\n{"─"*60}')
+        print(f'[Round {round_idx + 1}/{rounds}]  ε_next={_next_eps:.4f} ({_phase})')
+        for algoIndex, base_algo in enumerate(algorithms):
+            round_results = all_collected[algoIndex][round_start_counts[algoIndex]:]
+            if not round_results:
+                print(f'  {base_algo.name}: no results this round')
+                continue
+            successes = [sum(r.successfulRequestPerRound) for r in round_results]
+            ents      = [sum(r.entanglementPerRound)      for r in round_results]
+            print(f'  {base_algo.name}:  workers={len(round_results)}'
+                  f'  success={np.mean(successes):.1f}±{np.std(successes):.1f}'
+                  f'  ent={np.mean(ents):.1f}±{np.std(ents):.1f}')
+        print(f'{"─"*60}\n')
         print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
     for algoIndex in range(len(algorithms)):
