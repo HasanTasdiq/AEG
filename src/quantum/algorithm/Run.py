@@ -80,7 +80,7 @@ import os.path
 ttime   = 500    # RL algo slots per worker per round → 20 × 30 × 500 = 300,000 total
 ttime2  = 500    # non-RL algo slots (ILP/SP)
 step    = 10     # timeslot chart sample interval → 50 points across 500 slots
-rounds  = 20     # FedAvg rounds — more syncs reduce client drift vs fewer long rounds
+rounds  = 20     # FedAvg rounds
 workers = 30     # parallel workers per round; 64-core server, 2 TF threads each
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
@@ -174,7 +174,7 @@ def runThread(algo, requests, algoIndex, ttime, pid, result_queue, shared_data,
     if hasattr(algo, 'entAgent') and algo.entAgent is not None:
         if worker_model_path:
             algo.entAgent.save_model_to(worker_model_path)
-        print(f'pid={pid}  algo={algo.name}  ε={algo.entAgent.epsilon:.4f}  '
+        print(f'pid={pid}  algo={algo.name}  '
               f'buf={len(algo.entAgent.replay_memory)}', flush=True)
 
 
@@ -237,7 +237,7 @@ def fedavg_models(worker_paths, shared_path):
 
 def _agent_model_path(algo_name, n_nodes, alpha_val, q_val):
     """Compute the shared model filename for a given (algo, topology) tuple."""
-    return f'{algo_name}_{n_nodes}_{alpha_val}_{q_val}_EntanglementAgent.keras'
+    return f'{algo_name}_{n_nodes}_{alpha_val}_{q_val}_EntanglementAgentValue.keras'
 
 
 def _fedavg_subprocess(worker_paths: list, shared_path: str) -> None:
@@ -407,12 +407,8 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
             fp.join()
 
         # ── Per-round progress summary ────────────────────────────────────────
-        _eps_decay = 0.95 / (2_499)   # mirrors END_EPSILON_DECAYING=2500 in EntanglementAgent
-        _next_offset = (round_idx + 1) * ttime_
-        _next_eps = max(0.05, 1.0 - _eps_decay * max(0, _next_offset - 1))
-        _phase = 'exploit' if _next_eps <= 0.05 else 'explore'
         print(f'\n{"─"*60}')
-        print(f'[Round {round_idx + 1}/{rounds}]  ε_next={_next_eps:.4f} ({_phase})')
+        print(f'[Round {round_idx + 1}/{rounds}]  (value-regressor, random-behaviour)')
         for algoIndex, base_algo in enumerate(algorithms):
             round_results = all_collected[algoIndex][round_start_counts[algoIndex]:]
             if not round_results:
