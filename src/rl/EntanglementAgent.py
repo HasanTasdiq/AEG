@@ -167,31 +167,19 @@ class EntanglementAgent:
                 key=lambda x: x[2], reverse=True,
             )
             print(f'[EntanglementAgent] eval inference {time.time()-t0:.3f}s')
-            while True:
-                assigned_this_pass = False
-                for edge, state, _v in ranked:
-                    _, did_assign = self.env.assignQubitEdge(
-                        edge, MAX_ACTION, time_slot)
-                    if did_assign:
-                        assigned_this_pass = True
-                if not assigned_this_pass:
-                    break
+            for edge, _state, _v in ranked:
+                self.env.assignQubitEdge(edge, MAX_ACTION, time_slot)
             return
 
         edge_states = [(edge, self.env.ent_state(edge, time_slot)) for edge in edges]
         print(f'[EntanglementAgent] train state-build {time.time()-t0:.3f}s')
 
-        while True:
-            assigned_this_pass = False
-            for edge, state in edge_states:
-                action = np.random.randint(0, MAX_ACTION + 1)
-                _, did_assign = self.env.assignQubitEdge(edge, action, time_slot)
-                if did_assign:
-                    assigned_this_pass = True
-                    self.last_action_table.setdefault(edge, []).append(
-                        (time_slot, state))
-            if not assigned_this_pass:
-                break
+        for edge, state in edge_states:
+            action = np.random.randint(0, MAX_ACTION + 1)
+            _, did_assign = self.env.assignQubitEdge(edge, action, time_slot)
+            if did_assign:
+                self.last_action_table.setdefault(edge, []).append(
+                    (time_slot, state))
 
     # ── Reward update (called once per time slot from p4) ────────────────────
 
