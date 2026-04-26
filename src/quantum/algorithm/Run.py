@@ -47,6 +47,8 @@ import numpy as np
 import random
 import time
 import os.path
+import csv
+import datetime
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
 # FedAvg (Federated Averaging) parallel training for AEG-LS.
@@ -407,6 +409,8 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
             fp.join()
 
         # ── Per-round progress summary ────────────────────────────────────────
+        log_path    = '../../plot/data/training_progress.csv'
+        log_existed = os.path.isfile(log_path)
         print(f'\n{"─"*60}')
         print(f'[Round {round_idx + 1}/{rounds}]  (value-regressor, random-behaviour)')
         for algoIndex, base_algo in enumerate(algorithms):
@@ -416,9 +420,29 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
                 continue
             successes = [sum(r.successfulRequestPerRound) for r in round_results]
             ents      = [sum(r.entanglementPerRound)      for r in round_results]
+            mean_s    = float(np.mean(successes))
+            std_s     = float(np.std(successes))
+            mean_e    = float(np.mean(ents))
+            std_e     = float(np.std(ents))
             print(f'  {base_algo.name}:  workers={len(round_results)}'
-                  f'  success={np.mean(successes):.1f}±{np.std(successes):.1f}'
-                  f'  ent={np.mean(ents):.1f}±{np.std(ents):.1f}')
+                  f'  success={mean_s:.1f}±{std_s:.1f}'
+                  f'  success/slot={mean_s/ttime_:.3f}'
+                  f'  ent={mean_e:.1f}±{std_e:.1f}')
+            with open(log_path, 'a', newline='') as _f:
+                _w = csv.writer(_f)
+                if not log_existed:
+                    _w.writerow(['timestamp', 'round', 'total_rounds', 'algo',
+                                 'workers', 'ttime', 'mean_success', 'std_success',
+                                 'success_per_slot', 'mean_ent', 'std_ent'])
+                    log_existed = True
+                _w.writerow([
+                    datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    round_idx + 1, rounds, base_algo.name,
+                    len(round_results), ttime_,
+                    f'{mean_s:.2f}', f'{std_s:.2f}',
+                    f'{mean_s/ttime_:.4f}',
+                    f'{mean_e:.2f}', f'{std_e:.2f}',
+                ])
         print(f'{"─"*60}\n')
         print(f'[FedAvg] Round {round_idx + 1}/{rounds} complete')
 
