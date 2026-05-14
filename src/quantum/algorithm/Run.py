@@ -44,6 +44,7 @@ from topo.Link import Link
 
 from random import sample
 import numpy as np
+import networkx as nx
 import random
 import time
 import os.path
@@ -79,17 +80,17 @@ import datetime
 #   smoothly across rounds rather than restarting from EPSILON_START each round.
 #
 # Quick smoke-test: rounds=1, workers=2, ttime=20
-ttime   = 500    # RL algo slots per worker per round → 20 × 30 × 500 = 300,000 total
-ttime2  = 500    # non-RL algo slots (ILP/SP)
-step    = 10     # timeslot chart sample interval → 50 points across 500 slots
-rounds  = 20     # FedAvg rounds
-workers = 30     # parallel workers per round; 64-core server, 2 TF threads each
+ttime   = 50     # slots per worker per round
+ttime2  = 50     # non-RL algo slots
+step    = 5      # timeslot chart sample interval
+rounds  = 1      # FedAvg rounds
+workers = 1      # parallel workers per round
 nodeNo  = 50     # nodes (paper: 50-node Waxman network)
 alpha_  = 0.0002  # default entanglement-generation alpha (normalized coords; P≈0.819 at d≈1000 units)
 degree  = 6
 
 # Sweep ranges — one list per X-axis in the paper
-numOfRequestPerRound  = [25]                    # Fig. 5 / Fig. 6
+numOfRequestPerRound  = [25, 30, 35]             # Fig. 5 / Fig. 6
 totalRequest          = [10, 20, 30, 40, 50]
 numOfNodes            = [50, 75, 100]
 r                     = [0, 2, 4, 6, 8, 10]
@@ -97,7 +98,7 @@ q                     = [0.7, 0.8, 0.9]                # Fig. 5b
 alpha                 = [0.0001, 0.0002, 0.0003]        # Fig. 5c (×10⁻⁴ in paper)
 SocialNetworkDensity  = [0.25, 0.5, 0.75, 1]
 preSwapFraction       = [0.4, 0.6, 0.8, 1]
-entanglementLifetimes = [1, 2, 3, 4, 5, 6, 7, 8]       # Fig. 4
+entanglementLifetimes = [1, 2, 3, 4, 5, 6, 7, 8]        # Fig. 4
 requestTimeouts       = [100, 200, 300]
 preSwapCapacity       = [0.2, 0.4, 0.5, 0.6, 0.8]
 
@@ -118,7 +119,7 @@ Xlabels = [
 # Run all four paper sweeps: Fig.5 (requests), Fig.5b (swap prob),
 # Fig.5c (alpha), Fig.4 (entanglement lifetime)
 # runLabel = [0, 4, 5, 8]
-runLabel = [0]
+runLabel = [0]     # Fig. 5/6 — successful request vs requests per time slot
 
 # No non-RL baselines in this run — no algorithms need a shortened window
 toRunLessAlgos = ['ILP', 'Random', 'SP']
@@ -269,12 +270,12 @@ def Run(numOfRequestPerRound=30, numOfNode=0, r=7, q=0.9, alpha=alpha_,
     # parallel sweep processes never overwrite each other's saved model.
     # To add baselines or other variants, uncomment the relevant lines below.
     algorithms = [
-        # ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
-        # RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
-        # SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
+        ILP(copy.deepcopy(topo),                 name=f'ILP{name_suffix}'),
+        RandomLinkSelection(copy.deepcopy(topo), name=f'Random{name_suffix}'),
+        SP(copy.deepcopy(topo),                  name=f'SP{name_suffix}'),
         AEG_LS(copy.deepcopy(topo),              name=f'AEG_LS{name_suffix}'),
-        # AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
-        # AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
+        AEG_EC(copy.deepcopy(topo),  param='ten', name=f'AEG_EC{name_suffix}'),
+        AEG_PES(copy.deepcopy(topo), param='ten', name=f'AEG_PES{name_suffix}'),
     ]
 
     # r and density are ILP-specific; set only if ILP is in the list
@@ -524,7 +525,8 @@ if __name__ == '__main__':
         preSwapCapacity,        # 10
     ]
 
-    topo = Topo.generate(nodeNo, 0.9, 5, alpha_, degree)
+    G    = nx.read_gml('SurfnetCore.gml')
+    topo = Topo(G, 0.9, 5, alpha_, degree, name='surfnet')
 
     for XlabelIndex, Xlabel in enumerate(Xlabels):
         if XlabelIndex not in runLabel:

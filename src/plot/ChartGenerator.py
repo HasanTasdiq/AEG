@@ -10,7 +10,7 @@ from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, HPacker, VPacker
 
 # ── Algorithm display names ───────────────────────────────────────────────────
 # Order must match the order algorithms are written to the data files by Run.py.
-ALGO_NAMES = [ "ILP", "Random", "SP","AEG-LS" "AEG-EC", "AEG-PES"]
+ALGO_NAMES = ["ILP", "Random", "SP", "AEG-LS", "AEG-EC", "AEG-PES"]
 
 
 class ChartGenerator:
@@ -47,16 +47,16 @@ class ChartGenerator:
 
         # ── Plot style ────────────────────────────────────────────────────────
         colors = [
-            "#FF8800",   # AEG-LS  (index 0 — matches ALGO_NAMES[0])
-            "#FF0000",   # ILP
-            "#00AA00",   # Random
-            "#0000FF",   # SP
-            "#AA00AA",   # AEG-EC
-            "#000000",   # AEG-PES
+            "#FF2200",   # ILP    — red
+            "#33BB00",   # Random — green
+            "#0044FF",   # SP     — blue
+            "#00AACC",   # AEG-LS — cyan
+            "#9900CC",   # AEG-EC — purple
+            "#000000",   # AEG-PES — black
             "#900321",
             "#643321",
         ]
-        markers = ['o', 's', 'v', 'x', 'd', '1', '<', '*']
+        markers = ['o', 's', 'v', 'x', 'd', '*', '<', 'p']
 
         fontsize          = 30
         Xlabel_fontsize   = fontsize
